@@ -50,9 +50,10 @@ export async function httpRequest(env, opts) {
     payload = JSON.stringify(body);
   }
 
-  // الوضع المباشر أولاً: إن نجح fetch المباشر نستخدمه فورًا (لا بروكسي)
+  // الوضع المباشر أولاً (مطابق للأصل): إن نجح الـ fetch المباشر نستخدم نتيجته
+  // فورًا مهما كانت (403/200/...). لا نلجأ للبروكسي/relay إلا عند فشل الشبكة،
+  // كي لا نضاعف عدد الطلبات على الخدمة عند الحجب (ضغط شبكة).
   if (directFirst) {
-    // مهلة قصيرة للاتصال المباشر كي نفشل سريعًا وننتقل للبروكسي بدل الانتظار الطويل
     const directTimeout = Math.min(timeoutMs, 15000);
     const { ctrl, clear } = timeoutSignal(directTimeout);
     try {
@@ -63,14 +64,7 @@ export async function httpRequest(env, opts) {
         signal: ctrl.signal,
       });
       const text = await res.text();
-      const direct = { status: res.status, data: parseText(text), headers: res.headers, text, via: 'direct' };
-      // استجابة حجب/شبكة من العنوان المباشر (IP مركز بيانات محجوب مثل Ooredoo):
-      // تعاملها كفشل وراجع للبروكسي بدل تسليمها للخدمة.
-      const s = res.status;
-      const isHtml = typeof direct.data === 'string' && /<html|<!doctype/i.test(direct.data);
-      const blockish = (s >= 520 && s <= 526) || isHtml;
-      if (!blockish) return direct;
-      console.log(`[http] direct blocked (${s}) → fallback to proxy/relay`);
+      return { status: res.status, data: parseText(text), headers: res.headers, text, via: 'direct' };
     } catch (e) {
       console.log(`[http] direct failed: ${e.message || e} → fallback`);
     } finally {

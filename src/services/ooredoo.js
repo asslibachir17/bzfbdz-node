@@ -8,7 +8,6 @@ import { httpRequest } from './http.js';
 import { xSignature, generateDeviceFingerprint, platformDataSignature } from './ooredooSign.js';
 import { sleep } from '../util.js';
 import { cooldownLeftMs, setCooldown, extendCooldown, bumpCounter, resetCounter } from '../cooldowns.js';
-import { getLoadGuard } from '../loadGuard.js';
 
 const CHECKPOINT_PATH = '/api/ooredoo-bff/checkpoint/token';
 const TOKEN_PATH = '/api/auth/realms/myooredoo/protocol/openid-connect/token';
@@ -97,7 +96,7 @@ function freshTimestamp(ms) {
 
 export function createOoredoo(env) {
   const base = env.API_BASE_URL_OOREDOO || 'https://apis.ooredoo.dz';
-  const appVersion = env.APP_VERSION || '1.5.15';
+  const appVersion = env.APP_VERSION || '1.5.12';
   const instanceId = env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
   const byopValidity = env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
 
@@ -107,16 +106,28 @@ export function createOoredoo(env) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // ---------- كولدداونات الحجب ----------
+  // ---------- كولدداونات الحجب (مطابقة للأصل: تمنع إعادة المحاولة المحجوبة فورًا) ----------
   async function geoBlocked() {
-    return { blocked: false, leftMs: 0 };
+    const left = await cooldownLeftMs(env, 'oo:geo');
+    return { blocked: left > 0, leftMs: left };
   }
-  async function markGeoBlock() {}
+  async function markGeoBlock() {
+    await extendCooldown(env, 'oo:geo', 30 * 60 * 1e3);
+  }
   async function wafBlocked() {
-    return false;
+    return (await cooldownLeftMs(env, 'oo:waf')) > 0;
   }
-  async function registerWafBlock() {}
-  async function resetWafCounter() {}
+  async function registerWafBlock() {
+    const c = await bumpCounter(env, 'oo:waf:count');
+    if (c >= 2) {
+      const ms = Math.min(WAF_MAX, 30000 * Math.pow(2, c - 2));
+      await extendCooldown(env, 'oo:waf', ms);
+      console.log(`[Ooredoo] حجب WAF متكرر (${c}) → كولدداون ${Math.round(ms / 1000)}s`);
+    }
+  }
+  async function resetWafCounter() {
+    await resetCounter(env, 'oo:waf:count');
+  }
 
   // ---------- تباعد OTP ----------
   async function withOtpPacing() {
@@ -154,7 +165,7 @@ export function createOoredoo(env) {
       useDbProxy: true,
       proxyService: 'ooredoo',
       sid,
-      timeoutMs: 25000,
+      timeoutMs: 60000,
       directFirst: true,
     });
     if (isBlocked(res)) {
@@ -181,7 +192,7 @@ export function createOoredoo(env) {
       useDbProxy: true,
       proxyService: 'ooredoo',
       sid,
-      timeoutMs: 25000,
+      timeoutMs: 60000,
       directFirst: true,
     });
     if (isBlocked(res)) {
@@ -230,20 +241,16 @@ export function createOoredoo(env) {
       return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
     }
     await withOtpPacing();
-    return getLoadGuard('otp-ooredoo', env).run(async () => {
-      const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
-      if (!n) {
-        console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
-        return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
-      }
-      const res = await tokenRequest(msisdn, n, buildParams(), sid);
-      if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
-        console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
-      }
-      return res;
-    }, {
-      onCircuitOpen: async () => ({ statusCode: 503, data: { message: 'الخدمة مزدحمة، أعد المحاولة لاحقًا ⚠️', blocked: true } }),
-    });
+    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
+    if (!n) {
+      console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    }
+    const res = await tokenRequest(msisdn, n, buildParams(), sid);
+    if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
+      console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
+    }
+    return res;
   }
 
   // ---------- OTP ----------
