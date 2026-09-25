@@ -119,8 +119,9 @@ function pickNextProxy(entry, excludeIds, t = Date.now()) {
 // ─── حجب WAF/جغرافي ───
 function isBlocked(result) {
   const s = result.status;
-  if (s === 429 || s === 522) return true;
+  if (s === 407 || s === 429 || s === 522) return true;
   if (s === 403 && typeof result.data === 'string' && /<html|<!doctype/i.test(result.data)) return true;
+  if (s === 401 && typeof result.data === 'string' && /proxy|access denied|invalid auth/i.test(result.data)) return true;
   return false;
 }
 
@@ -270,6 +271,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
       const pUrl = proxyUrl(proxy, sid);
 
       const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
+      if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0,80)}`);
 
       if (!r.status) {
         markBad(proxy.id);

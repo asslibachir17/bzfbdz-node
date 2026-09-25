@@ -28,7 +28,11 @@ services:
       - key: DJEZZY_CLIENT_ID
         value: 6E6CwTkp8H1CyQxraPmcEJPQ7xka
       - key: DJEZZY_CLIENT_SECRET
-        sync: false
+        value: MVpXHW_ImuMsxKIwrJpoVVMHjRsa
+      - key: DJEZZY_CLIENT_ID_V2
+        value: 87pIExRhxBb3_wGsA5eSEfyATloa
+      - key: DJEZZY_CLIENT_SECRET_V2
+        value: uf82p68Bgisp8Yg1Uz8Pf6_v1XYa
       - key: API_BASE_URL_OOREDOO
         value: https://apis.ooredoo.dz
       - key: OOREDOO_MODERN_PLANS

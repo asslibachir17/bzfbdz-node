@@ -41,6 +41,7 @@ export default {
       }
       const body = await request.json().catch(() => ({}));
       const target = body.target || 'ooredoo-otp';
+      console.log('[diag] target =', target, 'phone =', String(body.phone || ''));
       const phone = String(body.phone || '0550000000');
       let res;
       if (target === 'djezzy') {
@@ -100,9 +101,22 @@ export default {
           method: 'GET',
           url: body.ipUrl || 'http://ip-api.com/json',
           useDbProxy: true,
+          proxyService: body.service || 'shared',
           timeoutMs: 60000,
         });
         res = { statusCode: r.status || 500, data: { via: r.via, ip: r.text || r.data, error: r.error || null } };
+      } else if (target === 'proxy-trace') {
+        const { default: proxyRequest } = await import('./services/proxy.js');
+        const targetUrl = body.ipUrl || 'http://ip-api.com/json';
+        const method = body.method || 'GET';
+        const r = await proxyRequest(env, {
+          method,
+          url: targetUrl,
+          headers: method === 'GET' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Djezzy/2.6.7' },
+          body: method === 'GET' ? undefined : new URLSearchParams({ msisdn: '213778830644', client_id: '87pIExRhxBb3_wGsA5eSEfyATloa', scope: 'smsotp' }).toString(),
+          service: body.service || 'djezzy',
+        }, 30000);
+        res = { statusCode: r.status || 599, data: { via: r.via, status: r.status, text: String(r.text || '').slice(0, 400), error: r.error || null } };
       } else if (target === 'proxy-direct') {
         // استدعاء proxyRequest مباشرة (بدون سقوط) لرؤية خطأ البروكسي الحقيقي
         const { default: proxyRequest } = await import('./services/proxy.js');
