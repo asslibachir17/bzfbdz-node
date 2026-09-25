@@ -24,8 +24,8 @@ export function createDjezzy(env) {
   const base = env.API_BASE_URL_DJEZZY || 'https://apim.djezzy.dz';
   const clientId = env.DJEZZY_CLIENT_ID;
   const clientSecret = env.DJEZZY_CLIENT_SECRET;
-  const clientIdV2 = env.DJEZZY_CLIENT_ID_V2 || clientId;
-  const clientSecretV2 = env.DJEZZY_CLIENT_SECRET_V2 || clientSecret;
+  const clientIdV2 = env.DJEZZY_CLIENT_ID_V2 || clientId || '87pIExRhxBb3_wGsA5eSEfyATloa';
+  const clientSecretV2 = env.DJEZZY_CLIENT_SECRET_V2 || clientSecret || 'uf82p68Bgisp8Yg1Uz8Pf6_v1XYa';
 
   function form(obj) {
     return Object.entries(obj)
