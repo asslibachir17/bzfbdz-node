@@ -31,12 +31,16 @@ export function createMessenger(env) {
   async function callSend(senderPsid, response) {
     if (!token || !senderPsid) return 0;
     try {
+      const _t = Date.now();
       await throttleSend(senderPsid);
+      const afterThrottle = Date.now() - _t;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipient: { id: senderPsid }, message: sanitizeResponse(response) }),
       });
+      const elapsed = Date.now() - _t;
+      if (elapsed > 300) console.log(`[perf-fb] send ${elapsed}ms (throttle ${afterThrottle}ms, status ${res.status})`);
       if (!res.ok) {
         const t = await res.text().catch(() => '');
         console.error('[FB] فشل الإرسال', res.status, t.slice(0, 300));

@@ -296,6 +296,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/webhook') {
       const rawBody = await request.text();
       console.log('[webhook] POST received, len=' + rawBody.length);
+      const _whT0 = Date.now();
 
       // التحقق من توقيع X-Hub-Signature-256 إن وُضع PAGE_APP_SECRET
       // (يمنع إرسال أحداث مزيفة من الخارج = توفير طلبات وتكلفة)
@@ -353,6 +354,8 @@ export default {
           onCircuitOpen: fallback,
         })
         .catch(() => fallback());
+      const _whDt = Date.now() - _whT0;
+      if (_whDt > 100) console.log(`[perf-wh] webhook accepted in ${_whDt}ms (enqueue)`);
       return new Response('EVENT_RECEIVED', { status: 200 });
     }
 

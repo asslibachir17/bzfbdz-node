@@ -148,6 +148,7 @@ function createBot(env, ctx, platform = "fb") {
     const sender = ev?.sender?.id;
     if (!sender)
       return;
+    const _t0 = Date.now();
     if (!fastFloodGate(sender, rc))
       return;
     const mid = ev?.message?.mid;
@@ -162,7 +163,9 @@ function createBot(env, ctx, platform = "fb") {
       await maybeDailySnapchatReset(env);
     }
     const session = await loadSession(env, sender);
+    const t1 = Date.now();
     const rl = await checkRateLimit(env, sender);
+    const t2 = Date.now();
     if (!rl.ok) {
       await send(sender, { text: "⚠️ كثرة رسائلك حاليًا، يرجى الانتظار قليلًا ثم المحاولة مجددًا." }, session);
       await saveSession(env, session);
@@ -174,15 +177,34 @@ function createBot(env, ctx, platform = "fb") {
         return;
       }
       // القرأة أُرسلت فورًا في الويب هوك (index.js)؛ هنا نبدأ مؤشر الكتابة فقط.
+      const t3 = Date.now();
       await messenger.typingOn(sender);
+      const t4 = Date.now();
       await handleMessage(sender, ev.message, session);
+      const t5 = Date.now();
+      await saveSession(env, session);
+      const t6 = Date.now();
+      console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms typingOn=${t4-t3}ms handle=${t5-t4}ms saveSession=${t6-t5}ms total=${t6-_t0}ms`);
+      return;
     } else if (ev.postback) {
       if (ev.postback.title || ev.postback.payload) {
+        const t3 = Date.now();
         await messenger.typingOn(sender);
+        const t4 = Date.now();
+        await handlePostback(sender, ev.postback, session);
+        const t5 = Date.now();
+        await saveSession(env, session);
+        const t6 = Date.now();
+        console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms typingOn=${t4-t3}ms handle=${t5-t4}ms saveSession=${t6-t5}ms total=${t6-_t0}ms`);
+        return;
       }
       await handlePostback(sender, ev.postback, session);
+      await saveSession(env, session);
+      return;
     }
     await saveSession(env, session);
+    const _dt = Date.now() - _t0;
+    if (_dt > 150) console.log(`[perf-bot] event handled in ${_dt}ms (mid=${mid || '-'})`);
   }
   async function handleMessage(sender, received_message, session) {
     const messageText = (received_message?.text || "").trim();
