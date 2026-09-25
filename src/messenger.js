@@ -1,7 +1,7 @@
 // عميل Facebook Messenger — طلب واحد فقط لكل رد (بدون mark_seen/typing إن FB_TYPING_INDICATORS=false)
 const lastSendBySender = new Map();
 
-async function throttleSend(senderPsid, minGapMs = 1100) {
+async function throttleSend(senderPsid, minGapMs = 350) {
   const last = lastSendBySender.get(senderPsid) || 0;
   const wait = last + minGapMs - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));

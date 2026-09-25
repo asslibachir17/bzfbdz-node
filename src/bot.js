@@ -102,7 +102,6 @@ function createBot(env, ctx, platform = "fb") {
       session.menu_ctx = null;
     }
     const status = await messenger.callSend(sender, response);
-    await messenger.typingOff(sender);
     return status;
   }
   function extractEvents(body) {
@@ -153,19 +152,24 @@ function createBot(env, ctx, platform = "fb") {
       return;
     const mid = ev?.message?.mid;
     if (mid) {
+      const _tm = Date.now();
       const seen = await checkAndSetCooldown(env, `mid:${mid}`, 5 * 60 * 1e3);
+      const _tmDt = Date.now() - _tm;
+      if (_tmDt > 100) console.log(`[perf-mid] mid-check took ${_tmDt}ms`);
       if (!seen.ok)
         return;
     }
     const algeriaDayNow = Math.floor((Date.now() + 36e5) / 864e5);
     if (algeriaDayNow !== lastSnapResetDayChecked) {
       lastSnapResetDayChecked = algeriaDayNow;
+      const _tS = Date.now();
       await maybeDailySnapchatReset(env);
+      const _tSd = Date.now() - _tS;
+      if (_tSd > 100) console.log(`[perf-snap] daily reset took ${_tSd}ms`);
     }
-    const session = await loadSession(env, sender);
+    const [session, rl] = await Promise.all([loadSession(env, sender), checkRateLimit(env, sender)]);
     const t1 = Date.now();
-    const rl = await checkRateLimit(env, sender);
-    const t2 = Date.now();
+    const t2 = t1;
     if (!rl.ok) {
       await send(sender, { text: "⚠️ كثرة رسائلك حاليًا، يرجى الانتظار قليلًا ثم المحاولة مجددًا." }, session);
       await saveSession(env, session);
