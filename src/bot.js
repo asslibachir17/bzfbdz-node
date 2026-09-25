@@ -288,7 +288,7 @@ function createBot(env, ctx, platform = "fb") {
       return;
     }
     const formattedPhone = phoneNumber.replace(/^0/, "");
-    const apiResponse = await withBlockRetry(() => operator === "djezzy" ? isTg ? djezzy.sendVerificationCodeV2(formattedPhone) : djezzy.sendVerificationCode(formattedPhone) : ooredoo.sendVerificationCode(formattedPhone));
+    const apiResponse = await withBlockRetry(() => operator === "djezzy" ? djezzy.sendVerificationCodeV2(formattedPhone) : ooredoo.sendVerificationCode(formattedPhone));
     console.log("[OTP]", operator, "status=", apiResponse.statusCode, "via=", apiResponse.via || "direct", "data=", JSON.stringify(apiResponse.data || {}).slice(0, 200), "err=", apiResponse.error || "");
     if (apiResponse.data && apiResponse.data.blocked) {
       await send(sender, { text: apiResponse.data.message || "الخدمة غير متاحة حاليًا." }, sess);
@@ -335,7 +335,7 @@ function createBot(env, ctx, platform = "fb") {
       return;
     }
     const operator = session.operator;
-    const verifyResponse = await withBlockRetry(() => operator === "djezzy" ? isTg ? djezzy.verifyCodeV2(session.phone.slice(1), code) : djezzy.verifyCode(session.phone.slice(1), code) : ooredoo.verifyCode(session.phone.slice(1), code));
+    const verifyResponse = await withBlockRetry(() => operator === "djezzy" ? djezzy.verifyCodeV2(session.phone.slice(1), code) : ooredoo.verifyCode(session.phone.slice(1), code));
     if (verifyResponse.data && verifyResponse.data.blocked) {
       await send(sender, { text: verifyResponse.data.message || "الخدمة غير متاحة حاليًا." }, session);
       return;
@@ -603,71 +603,7 @@ function createBot(env, ctx, platform = "fb") {
           };
         }
       }
-      if (isTg) {
-        return await activate2GV2(sender, phoneNumber, operator, session, existingUser);
-      }
-      const tokenUpdate = await djezzy.refreshToken(existingUser.refresh_token);
-      const accessToken = tokenUpdate?.data?.access_token;
-      if (tokenUpdate?.data?.blocked) {
-        return { text: tokenUpdate.data.message || "⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.", quick_replies: backQR(phoneNumber, operator) };
-      }
-      if (!accessToken) {
-        await sendVerificationCode(sender, phoneNumber, session);
-        return {};
-      }
-      await updateUserTokens(env, phoneNumber, accessToken, tokenUpdate.data.refresh_token || existingUser.refresh_token);
-      const csrf = tokenUpdate.data.id_token;
-      const res = await djezzy.subscriptionProduct(formattedPhone, accessToken, csrf, {
-        data: {
-          id: "GIFTWALKWIN",
-          type: "products",
-          meta: {
-            services: {
-              steps: 1e4,
-              code: "GIFTWALKWIN2GO",
-              id: "WALKWIN"
-            }
-          }
-        }
-      });
-      if (!(res.statusCode === 200 && res.data?.status === 200 && res.data?.object === "OK")) {
-        try {
-          await env.DB.prepare(
-            "INSERT INTO request_logs (created_at, direction, kind, method, url, status_code, sender_psid, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-          ).bind(
-            Date.now(),
-            "out",
-            "diag:act2g",
-            "POST",
-            "subscription-product",
-            res.statusCode || 0,
-            sender,
-            JSON.stringify({ data: res.data, raw: res.raw || null }).slice(0, 2e3)
-          ).run();
-        } catch (e) {
-        }
-      }
-      if (res.statusCode === 200 && res.data?.status === 200 && res.data?.object === "OK") {
-        await updateActivationDate(env, phoneNumber);
-        await setCooldown(env, `act2g:op:${phoneNumber}`, ACTIVATE_2G_TRY_COOLDOWN_MS);
-        return withFbButton({ text: `تم تفعيل 2Go بنجاح! 🎉
-رقم الهاتف: ${mask}`, quick_replies: backQR(phoneNumber, operator) }, platform);
-      }
-      if (res.statusCode === 401 || res.data?.object === "Unauthorized") {
-        return withFbButton({ text: `❌ لم يمر أسبوع منذ آخر تفعيل.
-رقم الهاتف: ${mask}`, quick_replies: backQR(phoneNumber, operator) }, platform);
-      }
-      if (res.statusCode === 402 || res.data?.object === "Payment Required") {
-        return withFbButton({ text: `رقم الهاتف: ${mask} 📱
-❌ لإعادة تفعيل خدمة 2 جيغا الأسبوعية يجب الإشتراك في باقة إنترنت لا تقل عن 100 دج.
-`, quick_replies: backQR(phoneNumber, operator) }, platform);
-      }
-      return { text: `حدث خطأ أثناء محاولة التفعيل ⚠️
-رقم الهاتف: ${mask}`, quick_replies: backQR(phoneNumber, operator) };
-    } catch (e) {
-      console.error("[2Go] خطأ:", e.message);
-      return { text: `حدث خطأ أثناء محاولة التفعيل ⚠️
-رقم الهاتف: ${mask}`, quick_replies: backQR(phoneNumber, operator) };
+      return await activate2GV2(sender, phoneNumber, operator, session, existingUser);
     } finally {
       await clearCooldown(env, `act2g:lock:${phoneNumber}`);
     }
@@ -917,115 +853,7 @@ function createBot(env, ctx, platform = "fb") {
     }
     if (!await botServiceCooldown(sender, "infosimdjezzy", phoneNumber, session, 6e4))
       return null;
-    if (isTg) {
-      return await djezzySimInfoV2(sender, phoneNumber, operator, session, existingUser);
-    }
-    let accessToken = existingUser.access_token;
-    const diffMins = (Date.now() - (Number(existingUser.updated_at) || 0)) / 6e4;
-    if (diffMins >= 210) {
-      const tokenUpdate = await djezzy.refreshToken(existingUser.refresh_token);
-      if (tokenUpdate?.data?.blocked) {
-        return { text: tokenUpdate.data.message || "⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.", quick_replies: backQR(phoneNumber, operator) };
-      }
-      if (tokenUpdate?.data?.access_token) {
-        accessToken = tokenUpdate.data.access_token;
-        await updateUserTokens(env, phoneNumber, accessToken, tokenUpdate.data.refresh_token || existingUser.refresh_token);
-      }
-    }
-    let response = await djezzy.getSimInfo(formattedPhone, accessToken);
-    if (response.statusCode === 401) {
-      const tokenUpdate = await djezzy.refreshToken(existingUser.refresh_token);
-      if (tokenUpdate?.data?.access_token) {
-        accessToken = tokenUpdate.data.access_token;
-        await updateUserTokens(env, phoneNumber, accessToken, tokenUpdate.data.refresh_token || existingUser.refresh_token);
-        response = await djezzy.getSimInfo(formattedPhone, accessToken);
-      }
-    }
-    if (response.statusCode === 401) {
-      await sendVerificationCode(sender, phoneNumber, session);
-      return null;
-    }
-    if (response.statusCode !== 200 || !response.data) {
-      return { text: "❌ حدث خطأ أثناء جلب البيانات، حاول لاحقاً.", quick_replies: backQR(phoneNumber, operator) };
-    }
-    try {
-      const included = response.data.included || [];
-      const data = response.data.data;
-      const attributes = data.attributes || {};
-      const subscriptionType = included.find((item) => item.type === "subscription-types");
-      const simName = subscriptionType?.attributes?.name?.text?.ar ?? "غير متوفر";
-      const balance = attributes.balance ?? "غير متوفر";
-      const activationTime = String(attributes["activation-time"] || "").split("T") || ["غير متوفر", ""];
-      const date = activationTime[0] || "غير متوفر";
-      const time = (activationTime[1] || "").split(".")[0] || "غير متوفر";
-      let offers = "🔹 العروض المفعلة:\n\n";
-      for (const item of included) {
-        if (item.attributes && Array.isArray(item.attributes.products)) {
-          for (const product of item.attributes.products) {
-            const name = product.name?.text?.ar || "غير معروف";
-            const expiryFull = product["expiry-at"] || "";
-            const [expDate, expTimeFull] = String(expiryFull).split("T");
-            const expTime = expTimeFull || "";
-            const [hour, minute] = expTime.split(":");
-            let adjustedHour = parseInt(hour, 10) + 1;
-            if (adjustedHour === 24)
-              adjustedHour = 0;
-            const adjustedTime = `${String(adjustedHour).padStart(2, "0")}:${minute || "00"}`;
-            offers += `🔸 ${name}
-`;
-            offers += `📅 الانتهاء: ${expDate || "غير معروف"} ⏰ ${adjustedTime || "--:--"}
-`;
-            if (Array.isArray(product.balances)) {
-              for (const b of product.balances) {
-                const balanceName = b["balance-name"]?.text?.ar || "غير معروف";
-                const unit = b.unit || "وحدة";
-                const unlimited = !!b.unlimited;
-                let used = (b["total-amount"] || 0) - (b["remaining-amount"] || 0);
-                if (used < 0)
-                  used = 0;
-                if (unit === "minutes" || b["bundle-type"] === "voice") {
-                  if (balanceName.includes("شبكات أخرى")) {
-                    offers += unlimited ? "📞 مكالمات غير محدودة نحو الشبكات الأخرى ♾️\n" : `📞 مكالمات نحو الشبكات الأخرى: ${used} / ${b["total-amount"]} دقيقة (المتبقي: ${b["remaining-amount"]})
-`;
-                  }
-                  if (balanceName.includes("جازي")) {
-                    offers += unlimited ? "📞 مكالمات غير محدودة نحو جازي ♾️\n" : `📞 مكالمات نحو جازي: ${used} / ${b["total-amount"]} دقيقة (المتبقي: ${b["remaining-amount"]})
-`;
-                  }
-                }
-                if (unit === "pieces" || b["bundle-type"] === "sms") {
-                  if (balanceName.includes("الشبكات الأخرى")) {
-                    offers += unlimited ? "💬 رسائل غير محدودة نحو الشبكات الأخرى ♾️\n" : `💬 رسائل نحو الشبكات الأخرى: ${used} / ${b["total-amount"]}
-`;
-                  }
-                  if (balanceName.includes("جازي")) {
-                    offers += unlimited ? "💬 رسائل غير محدودة نحو جازي ♾️\n" : `💬 رسائل نحو جازي: ${used} / ${b["total-amount"]}
-`;
-                  }
-                }
-                if (unit === "gb" || unit === "mb" || b["bundle-type"] === "data") {
-                  offers += unlimited ? "🌐 إنترنت غير محدود ♾️\n" : `🌐 إنترنت: ${((b["remaining-amount"] || 0) / 1024).toFixed(2)} / ${((b["total-amount"] || 0) / 1024).toFixed(2)} Go (المتبقي: ${(used / 1024).toFixed(2)} Go)
-`;
-                }
-              }
-            }
-            offers += "\n";
-          }
-        }
-      }
-      const finalText = `✅ معلومات الشريحة:
-💵 الرصيد: ${balance} دج
-💳 نوع الشريحة: ${simName}
-📶 نوع الاتصال: ${attributes["connection-type"] || "غير معروف"}
-🗓 تاريخ التفعيل: ${date} ⏰ ${time}
-
-` + offers.trim();
-      await setCooldown(env, `bot:infosimdjezzy:${sender}:${phoneNumber}`, 6e4);
-      return { text: finalText, quick_replies: backQR(phoneNumber, operator) };
-    } catch (e) {
-      console.error("[infosimdjezzy] خطأ في التنسيق:", e.message);
-      return { text: "❌ حدث خطأ أثناء التنفيذ، حاول لاحقاً.", quick_replies: backQR(phoneNumber, operator) };
-    }
+    return await djezzySimInfoV2(sender, phoneNumber, operator, session, existingUser);
   }
   function parseDjezzySimV2(balanceRes, infoRes, productsRes) {
     const bal = balanceRes?.data?.data || {};
@@ -1188,31 +1016,17 @@ function createBot(env, ctx, platform = "fb") {
         return { text: "يرجى تحقق أولا", quick_replies: gocheckQR(phoneNumber, operator, sender) };
       }
       let accessToken = userData.access_token;
-      if (isTg) {
-        const tokenRes = await getDjezzyFreshToken(sender, phoneNumber, operator, userData, session);
-        if (!tokenRes.access_token)
-          return tokenRes.fbResponse || {};
-        accessToken = tokenRes.access_token;
-      } else {
-        const diffMins = (Date.now() - (Number(userData.updated_at) || 0)) / 6e4;
-        if (diffMins >= 210) {
-          const tokenUpdate = await djezzy.refreshToken(userData.refresh_token);
-          if (tokenUpdate?.data?.blocked) {
-            return { text: tokenUpdate.data.message || "⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.", quick_replies: back };
-          }
-          if (tokenUpdate?.data?.access_token) {
-            accessToken = tokenUpdate.data.access_token;
-            await updateUserTokens(env, phoneNumber, accessToken, tokenUpdate.data.refresh_token || userData.refresh_token);
-          }
-        }
-      }
+      const tokenRes = await getDjezzyFreshToken(sender, phoneNumber, operator, userData, session);
+      if (!tokenRes.access_token)
+        return tokenRes.fbResponse || {};
+      accessToken = tokenRes.access_token;
       const receiver213 = `213${String(invitedNumber).replace(/^0/, "")}`;
-      const response = isTg ? await djezzy.sendMgmInvitation(subscriberNumber, accessToken, receiver213) : await djezzy.sendInvite(subscriberNumber, invitedNumber, accessToken);
+      const response = await djezzy.sendMgmInvitation(subscriberNumber, accessToken, receiver213);
       if (response.statusCode === 401) {
         await sendVerificationCode(sender, phoneNumber, session);
         return null;
       }
-      if (isTg) {
+      {
         const vBody = response.data;
         const vStatus = vBody ? Number(vBody.status) : NaN;
         if (vStatus === 200) {
@@ -1261,42 +1075,6 @@ ${msg}` : ""}`,
           quick_replies: back
         };
       }
-      let body = response.data;
-      if (typeof body?.body === "string") {
-        try {
-          body = JSON.parse(body.body);
-        } catch {
-        }
-      }
-      if (String(body?.code) === "200") {
-        return {
-          text: `تم إرسال الدعوة بنجاح! 🎉
-رقم هاتفك: ${formattedUserPhone}
-رقم المدعو: ${formattedInvitedPhone}
-
-🎁 سيحصل كل منكما على هدية عند تفعيل الدعوة.`,
-          quick_replies: back
-        };
-      }
-      if (String(body?.code) === "429") {
-        return {
-          text: `تم تجاوز الحد الأقصى لعدد الدعوات ❌ 
-رقم هاتفك: ${formattedUserPhone}
-رقم المدعو: ${formattedInvitedPhone}`,
-          quick_replies: back
-        };
-      }
-      if (String(body?.code) === "500") {
-        return { text: "حدث خطأ في سرفر جازي ⚠\nيرجى المحاولة لاحقا", quick_replies: back };
-      }
-      return {
-        text: `فشل إرسال الدعوة ❌ 
-رقم هاتفك: ${formattedUserPhone}
-رقم المدعو: ${formattedInvitedPhone}
-
-يرجى المحاولة لاحقًا.`,
-        quick_replies: back
-      };
     } catch (e) {
       console.error("[دعوة] خطأ:", e.message);
       return { text: "حدث خطأ غير متوقع ❌ \nيرجى المحاولة مرة أخرى لاحقًا ⚠️ ", quick_replies: back };

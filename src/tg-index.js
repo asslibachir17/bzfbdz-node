@@ -201,7 +201,7 @@ export default {
       try {
         let tok = null;
         if (rt) {
-          const upd = await djezzy.refreshToken(rt);
+          const upd = await djezzy.refreshTokenV2(rt);
           if (upd.statusCode === 200 && upd.data?.access_token) {
             tok = upd.data;
             try {
@@ -217,10 +217,10 @@ export default {
         let res;
         switch (action) {
           case 'send-otp':
-            res = await djezzy.sendVerificationCode(phoneRaw);
+            res = await djezzy.sendVerificationCodeV2(phoneRaw);
             break;
           case 'verify-otp': {
-            const v = await djezzy.verifyCode(phoneRaw, String(body.code || ''));
+            const v = await djezzy.verifyCodeV2(phoneRaw, String(body.code || ''));
             if (v.statusCode === 200 && v.data?.access_token) {
               try {
                 await env.DB.prepare("UPDATE users SET access_token = ?, refresh_token = ?, updated_at = ? WHERE phoneNumber = ?")
