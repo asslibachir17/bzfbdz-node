@@ -63,7 +63,14 @@ export async function httpRequest(env, opts) {
         signal: ctrl.signal,
       });
       const text = await res.text();
-      return { status: res.status, data: parseText(text), headers: res.headers, text, via: 'direct' };
+      const direct = { status: res.status, data: parseText(text), headers: res.headers, text, via: 'direct' };
+      // استجابة حجب/شبكة من العنوان المباشر (IP مركز بيانات محجوب مثل Ooredoo):
+      // تعاملها كفشل وراجع للبروكسي بدل تسليمها للخدمة.
+      const s = res.status;
+      const isHtml = typeof direct.data === 'string' && /<html|<!doctype/i.test(direct.data);
+      const blockish = (s >= 520 && s <= 526) || isHtml;
+      if (!blockish) return direct;
+      console.log(`[http] direct blocked (${s}) → fallback to proxy/relay`);
     } catch (e) {
       console.log(`[http] direct failed: ${e.message || e} → fallback`);
     } finally {

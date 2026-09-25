@@ -1,4 +1,5 @@
 import { httpRequest } from './http.js';
+import { getLoadGuard } from '../loadGuard.js';
 
 const UA_DJEZZY = 'Djezzy/2.6.7';
 const UA_DALVIK = 'Dalvik/2.1.0 (Linux; U; Android 9; C25Y Build/PI)';
@@ -210,22 +211,26 @@ export function createDjezzy(env) {
   async function sendVerificationCodeV2(phoneNumber) {
     const cleanPhone = String(phoneNumber).replace(/^0/, '');
     const phone = `213${cleanPhone}`;
-    const res = await httpRequest(env, {
-      method: 'POST',
-      url: `${NEW_OAUTH_BASE}/oauth2/registration`,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': UA_NEW,
-        Accept: '*/*',
-        'Cache-Control': 'no-cache',
-      },
-      body: form({ msisdn: phone, client_id: clientIdV2, scope: 'smsotp' }),
-      relayKey: 'DJEZZY_RELAY_URL',
-      useDbProxy: true,
-      proxyService: 'djezzy',
-      timeoutMs: 60000,
+    return getLoadGuard('otp-djezzy', env).run(async () => {
+      const res = await httpRequest(env, {
+        method: 'POST',
+        url: `${NEW_OAUTH_BASE}/oauth2/registration`,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': UA_NEW,
+          Accept: '*/*',
+          'Cache-Control': 'no-cache',
+        },
+        body: form({ msisdn: phone, client_id: clientIdV2, scope: 'smsotp' }),
+        relayKey: 'DJEZZY_RELAY_URL',
+        useDbProxy: true,
+        proxyService: 'djezzy',
+        timeoutMs: 60000,
+      });
+      return normalize(res, 500);
+    }, {
+      onCircuitOpen: async () => ({ statusCode: 503, data: { message: 'الخدمة مزدحمة، أعد المحاولة لاحقًا ⚠️', blocked: true } }),
     });
-    return normalize(res, 500);
   }
 
   async function verifyCodeV2(phoneNumber, code) {

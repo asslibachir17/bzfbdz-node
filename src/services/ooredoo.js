@@ -8,6 +8,7 @@ import { httpRequest } from './http.js';
 import { xSignature, generateDeviceFingerprint, platformDataSignature } from './ooredooSign.js';
 import { sleep } from '../util.js';
 import { cooldownLeftMs, setCooldown, extendCooldown, bumpCounter, resetCounter } from '../cooldowns.js';
+import { getLoadGuard } from '../loadGuard.js';
 
 const CHECKPOINT_PATH = '/api/ooredoo-bff/checkpoint/token';
 const TOKEN_PATH = '/api/auth/realms/myooredoo/protocol/openid-connect/token';
@@ -228,16 +229,20 @@ export function createOoredoo(env) {
       return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
     }
     await withOtpPacing();
-    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
-    if (!n) {
-      console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
-    }
-    const res = await tokenRequest(msisdn, n, buildParams(), sid);
-    if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
-      console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
-    }
-    return res;
+    return getLoadGuard('otp-ooredoo', env).run(async () => {
+      const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
+      if (!n) {
+        console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
+        return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+      }
+      const res = await tokenRequest(msisdn, n, buildParams(), sid);
+      if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
+        console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
+      }
+      return res;
+    }, {
+      onCircuitOpen: async () => ({ statusCode: 503, data: { message: 'الخدمة مزدحمة، أعد المحاولة لاحقًا ⚠️', blocked: true } }),
+    });
   }
 
   // ---------- OTP ----------

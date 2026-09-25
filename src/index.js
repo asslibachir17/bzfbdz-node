@@ -3,6 +3,7 @@ import { createBot } from './bot.js';
 import { createDjezzy } from './services/djezzy.js';
 import { createOoredoo } from './services/ooredoo.js';
 import { createMessenger } from './messenger.js';
+import { getLoadGuard } from './loadGuard.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -206,6 +207,19 @@ export default {
       });
     }
 
+    // ---------- إحصائيات نظام الضغط (محمي بـ DIAG_KEY) ----------
+    if (request.method === 'GET' && url.pathname === '/_diag/load') {
+      const key = request.headers.get('x-diag-key') || url.searchParams.get('key');
+      if (!env.DIAG_KEY || key !== env.DIAG_KEY) return new Response('Forbidden', { status: 403 });
+      const otpD = getLoadGuard('otp-djezzy', env).getStats();
+      const otpO = getLoadGuard('otp-ooredoo', env).getStats();
+      const wb = getLoadGuard('webhook', env).getStats();
+      return new Response(JSON.stringify({ djezzy: otpD, ooredoo: otpO, webhook: wb }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // ---------- تشخيص شامل (محمي بـ DIAG_KEY) ----------
     if (request.method === 'GET' && url.pathname === '/debug') {
       const diagKey = env.DIAG_KEY || 'bzfbdz-debug-2026';
@@ -314,7 +328,14 @@ export default {
       // نرد 200 فورًا لفيسبوك ثم نعالج في الخلفية: المعالجة المتزامنة الطويلة (مثل
       // تفعيل 2Go عبر البروكسي قد تستغرق 15-30 ثانية) تجعل فيسبوك يعيد تسليم نفس
       // الحدث ← يتكرر الرد عدة مرات. الرد الفوري يمنع إعادة التسليم نهائيًا.
-      ctx.waitUntil(bot.process(body));
+      // نظام الضغط: تزامن محدود + طابور مهلة + فتاحة دائرة على فشل الخدمات الخارجية.
+      getLoadGuard('webhook', env)
+        .run(() => bot.process(body), {
+          onCircuitOpen: async () => {
+            console.log('[webhook] load-guard open — dropped inline (EVENT_RECEIVED)');
+          },
+        })
+        .catch((e) => console.log('[webhook] load-guard:', e.message));
       return new Response('EVENT_RECEIVED', { status: 200 });
     }
 
