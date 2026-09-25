@@ -160,9 +160,10 @@ export function createOoredoo(env) {
     if (isBlocked(res)) {
       await registerWafBlock();
       await markGeoBlock();
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+      console.log('[ooredoo] rawRequest blocked:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || (res.data && res.data.message) || '').slice(0, 160));
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true, detail: String(res.text || '').slice(0, 120) } };
     }
-    return { statusCode: res.status || 500, data: parseBody(res.data), text: res.text };
+    return { statusCode: res.status || 500, data: parseBody(res.data), text: res.text, via: res.via };
   }
 
   async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
