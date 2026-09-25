@@ -8,7 +8,7 @@ const {
   API_BASE_URL_OOREDOO,
   FACEBOOK_PAGE_ACCESS_TOKEN,
 } = require('../config/config');
-const { generateDeviceFingerprint, xSignature } = require('./ooredooSignatureFast');
+const { generateDeviceFingerprint, xSignature } = require('./ooredooSign');
 
 // ---------------------------------------------------------------------------
 // 1) قاعدة البيانات — Pool آمن ضد التعليق وانقطاع الاتصال
