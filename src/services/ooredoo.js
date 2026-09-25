@@ -1,14 +1,19 @@
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
-const axios = require('axios');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const { Pool } = require('pg');
-const {
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import axios from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import pg from 'pg';
+import {
   API_BASE_URL_OOREDOO,
   FACEBOOK_PAGE_ACCESS_TOKEN,
-} = require('../config/config');
-const { generateDeviceFingerprint, xSignature } = require('./ooredooSign');
+} = '../config/config.js';
+import { generateDeviceFingerprint, xSignature } = './ooredooSignatureFast.js';
+
+const { Pool } = pg;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // 1) قاعدة البيانات — Pool آمن ضد التعليق وانقطاع الاتصال
@@ -117,9 +122,9 @@ const APP_VERSION = process.env.APP_VERSION || '1.5.15';
 const INSTANCE_ID = process.env.OOREDOO_INSTANCE_ID || crypto.randomUUID().replace(/-/g, '');
 const NATIVE_TOKEN = process.env.NATIVE_TOKEN || '';
 
-const BYOP_VALIDITY = process.env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
-const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', process.env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
-const BYOP_LIMITED_CODES = String(process.env.OOREDOO_BYOP_LIMITED_CODES || '')
+export const BYOP_VALIDITY = process.env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
+export const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', process.env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
+export const BYOP_LIMITED_CODES = String(process.env.OOREDOO_BYOP_LIMITED_CODES || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -269,7 +274,7 @@ function freshSidProxyUrl(proxyUrl, customSid = null) {
   return `${proxyUrl.slice(0, at)}-${sidToUse}${proxyUrl.slice(at)}`;
 }
 
-async function setupDbProxy() {
+export async function setupDbProxy() {
   try {
     const result = await pool.query(`
       SELECT * FROM proxies
@@ -677,21 +682,21 @@ async function runOtpWithRetry(task, msisdn, logLabel, summarize) {
 // ---------------------------------------------------------------------------
 // 11) الواجهة العامة للـ OTP
 // ---------------------------------------------------------------------------
-async function sendOoredooVerificationCode(phoneNumber) {
+export async function sendOoredooVerificationCode(phoneNumber) {
   const msisdn = toMsisdn(phoneNumber);
   return runOtpWithRetry(() => attemptOtpSend(msisdn), msisdn, 'sendOtp', (r) => ({
     otpRequired: !!(r.data && r.data.otpRequired),
   }));
 }
 
-async function verifyOoredooCode(phoneNumber, code) {
+export async function verifyOoredooCode(phoneNumber, code) {
   const msisdn = toMsisdn(phoneNumber);
   return runOtpWithRetry(() => doVerifyOtp(msisdn, code), msisdn, 'verifyOtp', (r) => ({
     hasAccessToken: !!(r.data && r.data.access_token),
   }));
 }
 
-async function refreshOoredooToken(phoneNumber, refreshToken) {
+export async function refreshOoredooToken(phoneNumber, refreshToken) {
   const msisdn = toMsisdn(phoneNumber);
   return runOtpWithRetry(() => doRefreshToken(msisdn, refreshToken), msisdn, 'refreshToken', (r) => ({
     hasAccessToken: !!(r.data && r.data.access_token),
@@ -756,37 +761,37 @@ async function bffRequest(method, path, token, msisdn, options) {
   }
 }
 
-function getOoredooGamificationStatus({ token, msisdn }) {
+export function getOoredooGamificationStatus({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/gamification/status', token, msisdn);
 }
 
-function getOoredooGamificationHistory({ token, msisdn }) {
+export function getOoredooGamificationHistory({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/gamification/history', token, msisdn);
 }
 
-function playOoredooGamification({ token, msisdn }) {
+export function playOoredooGamification({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/gamification/play', token, msisdn);
 }
 
-function checkOoredooSnapchatEligibility({ token, msisdn }) {
+export function checkOoredooSnapchatEligibility({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/snap-chat/eligibility', token, msisdn);
 }
 
-function applyOoredooSnapchat({ token, msisdn }) {
+export function applyOoredooSnapchat({ token, msisdn }) {
   return bffRequest('POST', '/api/ooredoo-bff/snap-chat/apply', token, msisdn, { body: '' });
 }
 
-function getOoredooAccountInfo({ token, msisdn }) {
+export function getOoredooAccountInfo({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/bundle/getActivePackages', token, msisdn);
 }
 
-function getOoredooUserInfo({ token, msisdn }) {
+export function getOoredooUserInfo({ token, msisdn }) {
   return bffRequest('GET', '/api/ooredoo-bff/userInfo/personal', token, msisdn, {
     extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8' },
   });
 }
 
-function purchaseOoredooByop({ token, msisdn, code }) {
+export function purchaseOoredooByop({ token, msisdn, code }) {
   const isLimited = BYOP_LIMITED_CODES.includes(code);
   return bffRequest('POST', '/api/ooredoo-bff/bundle/purchase/byop', token, msisdn, {
     body: JSON.stringify({
@@ -800,7 +805,7 @@ function purchaseOoredooByop({ token, msisdn, code }) {
 // ---------------------------------------------------------------------------
 // 13) Facebook Messenger
 // ---------------------------------------------------------------------------
-async function sendMessage(senderPsid, response) {
+export async function sendMessage(senderPsid, response) {
   if (!FACEBOOK_PAGE_ACCESS_TOKEN) {
     console.error('❌ sendMessage: FACEBOOK_PAGE_ACCESS_TOKEN غير معرّف في config');
     return;
@@ -816,11 +821,30 @@ async function sendMessage(senderPsid, response) {
 }
 
 // ---------------------------------------------------------------------------
-// 14) تهيئة البروكسي عند بدء التشغيل + التصدير
+// 14) Factory Function (createOoredoo) + Default Export
 // ---------------------------------------------------------------------------
+export function createOoredoo() {
+  return {
+    sendVerificationCode: sendOoredooVerificationCode,
+    verifyCode: verifyOoredooCode,
+    refreshToken: refreshOoredooToken,
+    getGamificationStatus: getOoredooGamificationStatus,
+    getGamificationHistory: getOoredooGamificationHistory,
+    playGamification: playOoredooGamification,
+    checkSnapchatEligibility: checkOoredooSnapchatEligibility,
+    applySnapchat: applyOoredooSnapchat,
+    getAccountInfo: getOoredooAccountInfo,
+    getUserInfo: getOoredooUserInfo,
+    purchaseByop: purchaseOoredooByop,
+    BYOP_CODES,
+    BYOP_LIMITED_CODES,
+  };
+}
+
 setupDbProxy().catch(console.error);
 
-module.exports = {
+export default {
+  createOoredoo,
   sendOoredooVerificationCode,
   verifyOoredooCode,
   refreshOoredooToken,
