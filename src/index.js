@@ -139,6 +139,25 @@ export default {
             blocked: pk.data?.blocked,
           },
         };
+      } else if (target === 'djezzy-v2') {
+        // نفس ما يستخدمه البوت حالياً: sendVerificationCodeV2 (mobile-api/oauth2/registration, UA 3.0.7)
+        res = await createDjezzy(env).sendVerificationCodeV2(phone);
+      } else if (target === 'djezzy-v2-mobile') {
+        // مسار بديل مقترح: oauth2 على جذر apim (كما V1) لكن UA 3.0.7
+        const { httpRequest } = await import('./services/http.js');
+        const msisdn = `213${String(phone).replace(/^0/, '')}`;
+        const form = new URLSearchParams({ msisdn, client_id: env.DJEZZY_CLIENT_ID, scope: 'smsotp' }).toString();
+        const r = await httpRequest(env, {
+          method: 'POST',
+          url: 'https://apim.djezzy.dz/oauth2/registration',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Djezzy/3.0.7' },
+          body: form,
+          useDbProxy: true,
+          proxyService: 'djezzy',
+          timeoutMs: 60000,
+          relayKey: 'DJEZZY_RELAY_URL',
+        });
+        res = { statusCode: r.status || 500, data: { via: r.via, rawStatus: r.status, rawBody: String(r.text || r.body || '').slice(0, 300), error: r.error || null } };
       } else {
         res = await createOoredoo(env).sendVerificationCode(phone);
       }
