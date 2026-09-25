@@ -194,7 +194,16 @@ export default {
 
     // ---------- فحص صحي (اختياري للمراقبة) ----------
     if (request.method === 'GET' && url.pathname === '/health') {
-      return new Response('OK', { status: 200 });
+      const dbBackend = env.DB?.backend || 'none';
+      const data = {
+        ok: true,
+        db: dbBackend,
+        hasDatabaseUrl: /^postgres(ql)?:\/\//i.test(env.DATABASE_URL || ''),
+      };
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // ---------- تشخيص شامل (محمي بـ DIAG_KEY) ----------
