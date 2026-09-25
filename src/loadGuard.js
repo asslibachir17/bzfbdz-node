@@ -97,16 +97,15 @@ class LoadGuard {
       throw this._busyError();
     }
 
-    // 3) سعة متاحة → نفّذ فوراً
+    // 3) سعة متاحة → نفّذ فوراً ولا تنتظر.
     if (this.active < this.maxConcurrency) {
       return this._execute(task, opts);
     }
 
-    // 4) انتظار في الطابور مع مهلة
-    await new Promise((resolve, reject) => {
+    // 4) السعة ممتلئة → اصف في الطابور وانتظر حتى يُشغّله _pump.
+    //    _pump وحده من ينفّذ المهمة (لا نعيد تنفيذها هنا أبدًا).
+    return new Promise((resolve, reject) => {
       const deadline = Date.now() + this.queueTtlMs;
-      const entry = { resolve, reject, task, opts, deadline };
-      this.queue.push(entry);
       const timer = setTimeout(() => {
         const i = this.queue.indexOf(entry);
         if (i >= 0) this.queue.splice(i, 1);
@@ -115,14 +114,9 @@ class LoadGuard {
         e.status = 503;
         reject(e);
       }, this.queueTtlMs);
-      entry.timer = timer;
+      const entry = { resolve, reject, task, opts, deadline, timer };
+      this.queue.push(entry);
     });
-
-    // 5) بعد الانتظار ننفّذ (قد تكون السعة حررت لحظياً)
-    if (this.active < this.maxConcurrency) {
-      return this._execute(task, opts);
-    }
-    throw this._busyError();
   }
 
   async _execute(task, opts = {}) {
