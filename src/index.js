@@ -340,22 +340,21 @@ export default {
       for (const s of seenTargets) bot.markSeenFb(s).catch(() => {});
       seenTargets.clear();
 
-      // نرد 200 فورًا لفيسبوك ثم نعالج في الخلفية: المعالجة المتزامنة الطويلة (مثل
-      // تفعيل 2Go عبر البروكسي قد تستغرق 15-30 ثانية) تجعل فيسبوك يعيد تسليم نفس
-      // الحدث ← يتكرر الرد عدة مرات. الرد الفوري يمنع إعادة التسليم نهائيًا.
-      // نظام الضغط: تزامن محدود + طابور مهلة + فتاحة دائرة على فشل الخدمات الخارجية.
-      // مهم: لا نُسقط أي رسالة أبدًا — عند رفض الحارس (دارة/طابور ممتلئ/مهلة)
-      // نعالجها بدون حارس في الخلفية حتى يصل المستخدم دائمًا إلى رد.
-      const fallback = () => {
-        bot.process(body).catch((e2) => console.log('[webhook] fallback processing error:', e2.message));
+      // نرد 200 فورًا لفيسبوك ثم نعالج في الخلفية مباشرة (بدون طابور):
+      // أي طابور كان يعلّق الرسائل النصية خلف مهام OTP البطيئة (15-30 ثانية)
+      // فيصل الرد متأخرًا. المعالجة الفورية = رد فوري لكل رسالة، والحماية
+      // الحقيقية تبقى داخل حارس OTP نفسه (تزامن محدود للاستدعاءات الخارجية).
+      const runBg = async () => {
+        try {
+          await bot.process(body);
+        } catch (e2) {
+          console.log('[webhook] processing error:', e2.message);
+        }
       };
-      getLoadGuard('webhook', env)
-        .run(() => bot.process(body), {
-          onCircuitOpen: fallback,
-        })
-        .catch(() => fallback());
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(runBg());
+      else runBg();
       const _whDt = Date.now() - _whT0;
-      if (_whDt > 100) console.log(`[perf-wh] webhook accepted in ${_whDt}ms (enqueue)`);
+      if (_whDt > 100) console.log(`[perf-wh] webhook accepted in ${_whDt}ms (direct)`);
       return new Response('EVENT_RECEIVED', { status: 200 });
     }
 

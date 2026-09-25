@@ -39,8 +39,11 @@ export async function checkAndSetCooldown(env, key, cooldownMs, t = Date.now()) 
 }
 
 // فحص + تسجيل في عملية واحدة (UPSERT) — رحلة شبكة واحدة بدل اثنتين.
-// إن كانت القديمة ما زالت قائمة (لم تنتهِ) نبقيها (using ? placeholder = t)،
-// وإلا نضع الجديدة (المعامل الثاني = until الجديد).
+// يرجع { ok: true } عند السماح (إدراج جديد أو كولدداون منتهٍ)،
+// و{ ok: false, leftMs } عند بقاء الكولدداون قائمًا (قيمة قديمة محفوظة).
+// المقارنة المعيارية للنهاية تستخدم علامة counter موثوقة بدل مقارنة القيم
+// (التي تفشل عندما تتساوى القيمة القديمة والجديدة) — counter=-1 لدى الحظر،
+// و0/1 لدى السماح (مفتاح mid: لا يُقرأ عداده في أي مكان).
 export async function checkAndSetCooldownOne(env, key, cooldownMs, t = Date.now()) {
   const until = t + cooldownMs;
   const row = await first(
@@ -48,14 +51,17 @@ export async function checkAndSetCooldownOne(env, key, cooldownMs, t = Date.now(
     `INSERT INTO cooldowns (key, until, counter) VALUES (?2, ?3, 1)
      ON CONFLICT(key) DO UPDATE SET
        until = CASE WHEN cooldowns.until > ?1 THEN cooldowns.until ELSE excluded.until END,
-       counter = cooldowns.counter
-     RETURNING until`,
+       counter = CASE WHEN cooldowns.until > ?1 THEN -1 ELSE 0 END
+     RETURNING until, counter`,
     t,
     key,
     until
   );
-  const left = row ? Number(row.until) - t : 0;
-  return left > 0 ? { ok: false, leftMs: left } : { ok: true, leftMs: 0 };
+  if (Number(row?.counter) === -1) {
+    const left = Number(row?.until) - t;
+    return { ok: false, leftMs: left > 0 ? left : 0 };
+  }
+  return { ok: true, leftMs: 0 };
 }
 
 // عدّاد متصاعد محفوظ (للحجب بعد N محاولات): يرجع العدد الحالي

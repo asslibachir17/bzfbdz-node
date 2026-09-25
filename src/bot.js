@@ -180,27 +180,19 @@ function createBot(env, ctx, platform = "fb") {
         await saveSession(env, session);
         return;
       }
-      // القرأة أُرسلت فورًا في الويب هوك (index.js)؛ هنا نبدأ مؤشر الكتابة فقط.
-      const t3 = Date.now();
-      await messenger.typingOn(sender);
-      const t4 = Date.now();
+      // القرأة أُرسلت فورًا في الويب هوك (index.js). مؤشر الكتابة: لا ننتظره —
+      // الرد يُبنى مباشرة بأسرع وقت (لا نقطعة إضافية للشبكة قبل المعالجة).
+      messenger.typingOn(sender).catch(() => {});
+      let t5 = Date.now();
       await handleMessage(sender, ev.message, session);
-      const t5 = Date.now();
+      let t6 = Date.now();
       await saveSession(env, session);
-      const t6 = Date.now();
-      console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms typingOn=${t4-t3}ms handle=${t5-t4}ms saveSession=${t6-t5}ms total=${t6-_t0}ms`);
+      let t7 = Date.now();
+      console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms handle=${t6-t5}ms save=${t7-t6}ms total=${t7-_t0}ms`);
       return;
     } else if (ev.postback) {
       if (ev.postback.title || ev.postback.payload) {
-        const t3 = Date.now();
-        await messenger.typingOn(sender);
-        const t4 = Date.now();
-        await handlePostback(sender, ev.postback, session);
-        const t5 = Date.now();
-        await saveSession(env, session);
-        const t6 = Date.now();
-        console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms typingOn=${t4-t3}ms handle=${t5-t4}ms saveSession=${t6-t5}ms total=${t6-_t0}ms`);
-        return;
+        messenger.typingOn(sender).catch(() => {});
       }
       await handlePostback(sender, ev.postback, session);
       await saveSession(env, session);
