@@ -1,33 +1,61 @@
-import crypto from 'crypto';
+// عميل أوريدو — إعادة كتابة كاملة لتعمل على Cloudflare Workers (WebCrypto + fetch)
+//
+// ملاحظة: أوريدو متاح من عناوين Cloudflare مباشرة (مؤكَّد: checkpoint يعيد 202).
+// لذلك لا نعتبر 403 حجبًا — بل هو سلوك OTP الأصلي ("أُرسل الرمز وثُبّتت الجلسة").
+// نحتفظ فقط بكشف الحجب الشبكي الفعلي (أخطاء origin من Cloudflare 520-526 أو HTML)
+// مع كولدداون متصاعد لتجنب إعادة المحاولة المحجوبة، وندعم OOREDOO_RELAY_URL كاحتياط.
+import { httpRequest } from './http.js';
 import { xSignature, generateDeviceFingerprint, platformDataSignature } from './ooredooSign.js';
+import { sleep } from '../util.js';
+import { cooldownLeftMs, setCooldown, extendCooldown, bumpCounter, resetCounter } from '../cooldowns.js';
 
-const BASE_URL = process.env.API_BASE_URL_OOREDOO || 'https://apis.ooredoo.dz';
 const CHECKPOINT_PATH = '/api/ooredoo-bff/checkpoint/token';
 const TOKEN_PATH = '/api/auth/realms/myooredoo/protocol/openid-connect/token';
-const APP_VERSION = process.env.APP_VERSION || '1.5.12';
-const INSTANCE_ID = process.env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
 
-// إدارة الذاكرة المؤقتة في Node.js (In-Memory Store)
-const memoryStore = new Map();
-const otpSids = new Map();
+const GEO_MESSAGE = 'الخدمة غير متاحة حاليًا، يرجى المحاولة لاحقًا ⚠️';
+const OTP_PACE_MS = 2500; // تباعد بين طلبات OTP
+const WAF_MAX = 180000; // أقصى كولدداون عند حجب شبكي متكرر
 
-function setCooldown(key, durationMs) {
-  memoryStore.set(key, Date.now() + durationMs);
-}
-
-function getCooldownLeft(key) {
-  const expire = memoryStore.get(key);
-  if (!expire) return 0;
-  const left = expire - Date.now();
-  if (left <= 0) {
-    memoryStore.delete(key);
-    return 0;
-  }
-  return left;
-}
-
+// ---------- تثبيت SID (نفس IP الخروج) بين إرسال/تحقق OTP ----------
+// أوريدو يقيّد الرمز بالـ IP الذي أرسله → نحفظ SID الإرسال في D1
+// (لأن الإرسال والتحقق استدعاءان منفصلان) ونعيد استخدامه في التحقق.
+const SID_PREFIX = 'sid-';
 function freshFlowSid() {
-  return 'sid-' + crypto.randomBytes(5).toString('hex');
+  const bytes = crypto.getRandomValues(new Uint8Array(5));
+  return SID_PREFIX + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function pinOtpSid(db, msisdn, sid) {
+  try {
+    await db.prepare('INSERT INTO otp_sids (msisdn, sid, created_at) VALUES (?, ?, ?) ON CONFLICT(msisdn) DO UPDATE SET sid = excluded.sid, created_at = excluded.created_at')
+      .bind(msisdn, sid, Date.now())
+      .run();
+  } catch (e) {
+    console.log(`[Ooredoo] فشل حفظ SID: ${e.message}`);
+  }
+}
+async function getPinnedSid(db, msisdn) {
+  try {
+    const row = await db.prepare('SELECT sid FROM otp_sids WHERE msisdn = ?').bind(msisdn).first();
+    return row ? row.sid : null;
+  } catch {
+    return null;
+  }
+}
+async function clearPinnedSid(db, msisdn) {
+  try {
+    await db.prepare('DELETE FROM otp_sids WHERE msisdn = ?').bind(msisdn).run();
+  } catch {}
+}
+
+function parseBody(data) {
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return data;
+    }
+  }
+  return data;
 }
 
 function toMsisdn(phoneNumber) {
@@ -35,220 +63,363 @@ function toMsisdn(phoneNumber) {
   return `213${digits.replace(/^0/, '')}`;
 }
 
-export function createOoredoo(env = process.env) {
-  // دالة إرسال الطلبات الأساسية باستخدام fetch المدمجة
-  async function rawRequest(method, url, headers, data) {
-    try {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body: method !== 'GET' && method !== 'HEAD' ? data : undefined,
-      });
+// هل الاستجابة تدل على حجب شبكي فعلي؟
+function isBlocked(res) {
+  if (!res) return false;
+  if (res.status === 407) return false;
+  // أخطاء origin من Cloudflare (522/520/521/524...) = حجب شبكي لا استجابة API
+  if (res.status >= 520 && res.status <= 526) return true;
+  // صفحات HTML (صفحة حجب WAF/جدار ناري)
+  if (typeof res.data === 'string' && /<html|<!doctype/i.test(res.data)) return true;
+  return false;
+}
 
-      const text = await response.text();
-      let parsedData;
-      try {
-        parsedData = JSON.parse(text);
-      } catch {
-        parsedData = text;
-      }
+function cookieJar(headers) {
+  try {
+    if (headers && typeof headers.getSetCookie === 'function') {
+      const raw = headers.getSetCookie();
+      if (raw && raw.length) return raw.map((c) => c.split(';')[0]).filter(Boolean).join('; ');
+    }
+  } catch {}
+  try {
+    const s = headers && typeof headers.get === 'function' ? headers.get('set-cookie') : '';
+    if (s) return s.split(',').map((c) => c.split(';')[0]).filter(Boolean).join('; ');
+  } catch {}
+  return '';
+}
 
-      // فحص حجب WAF (صفحات HTML أو أخطاء Origin)
-      const isHtml = typeof text === 'string' && /<html|<!doctype/i.test(text);
-      if (response.status >= 520 || isHtml) {
-        return { statusCode: 403, data: { message: 'حجب شبكي مؤقت', isWafBlock: true } };
-      }
+function freshTimestamp(ms) {
+  const base = new Date(ms).toISOString().slice(0, 19);
+  const micro = String((ms % 1000) * 1000 + Math.floor(Math.random() * 1000)).padStart(6, '0');
+  return `${base}.${micro}Z`;
+}
 
-      const setCookie = response.headers.get('set-cookie');
+export function createOoredoo(env) {
+  const base = env.API_BASE_URL_OOREDOO || 'https://apis.ooredoo.dz';
+  const appVersion = env.APP_VERSION || '1.5.12';
+  const instanceId = env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
+  const byopValidity = env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
 
-      return {
-        statusCode: response.status,
-        data: parsedData,
-        headers: {
-          'x-nonce-id': response.headers.get('x-nonce-id'),
-          'x-chronos-id': response.headers.get('x-chronos-id'),
-          'set-cookie': setCookie,
-        },
-      };
-    } catch (err) {
-      return { statusCode: 500, data: { message: err.message } };
+  const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
+  const BYOP_LIMITED_CODES = String(env.OOREDOO_BYOP_LIMITED_CODES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+// ---------- كولدداونات الحجب ----------
+  // تم تعطيل oo:geo مؤقتًا لتجنب إغلاق الخدمة أمام أرقام أوريدو.
+  //الحماية الحقيقية هي WAF المتصاعد (يتطلب تكرار ≥2).
+  async function geoBlocked() {
+    return false;
+  }
+  async function markGeoBlock() {}
+  async function markGeoBlock() {
+    await extendCooldown(env, 'oo:geo', 90 * 1e3);
+  }
+  async function wafBlocked() {
+    return (await cooldownLeftMs(env, 'oo:waf')) > 0;
+  }
+  async function registerWafBlock() {
+    const c = await bumpCounter(env, 'oo:waf:count');
+    if (c >= 2) {
+      const ms = Math.min(WAF_MAX, 30000 * Math.pow(2, c - 2));
+      await extendCooldown(env, 'oo:waf', ms);
+      console.log(`[Ooredoo] حجب WAF متكرر (${c}) → كولدداون ${Math.round(ms / 1000)}s`);
     }
   }
+  async function resetWafCounter() {
+    await resetCounter(env, 'oo:waf:count');
+  }
 
-  // Handshake للحصول على x-nonce-id و x-chronos-id
-  async function nonceHandshake(msisdn, path, method) {
-    const ts = Date.now();
-    const corr = `${ts}-${Math.floor(100 + Math.random() * 900)}`;
-    const fp = await generateDeviceFingerprint(INSTANCE_ID, msisdn, ts);
-    const sig = xSignature();
+  // ---------- تباعد OTP ----------
+  async function withOtpPacing() {
+    const left = await cooldownLeftMs(env, 'oo:otp:pace');
+    if (left > 0) await sleep(left);
+    await setCooldown(env, 'oo:otp:pace', OTP_PACE_MS);
+  }
 
-    const headers = {
+  // ---------- الرؤوس ----------
+  function commonHeaders({ sig, corr, ts, fp, msisdn, cookie }) {
+    return {
       'User-Agent': 'Dart/3.4 (dart:io)',
-      'Content-Type': 'application/json',
-      'platform': 'android',
+      Accept: '*/*',
+      platform: 'android',
       'X-Platform-Origin': 'mobile-android',
       'x-msisdn': msisdn,
       'X-Correlation-ID': corr,
       'x-signature': sig,
-      'x-version': APP_VERSION,
+      'x-version': appVersion,
       'X-Timestamp': String(ts),
-      'X-Instance-Id': INSTANCE_ID,
+      'X-Instance-Id': instanceId,
       'X-Device-Fingerprint': fp,
       'x-force-update': 'true',
-      'x-path': path,
-      'x-method': method,
+      ...(cookie ? { Cookie: cookie } : {}),
     };
-
-    const res = await rawRequest('POST', `${BASE_URL}${CHECKPOINT_PATH}`, headers, '{}');
-    if (res.statusCode !== 200 || !res.headers) return null;
-
-    const nonceId = res.headers['x-nonce-id'];
-    const chronosId = res.headers['x-chronos-id'];
-    const cookie = res.headers['set-cookie'] || '';
-
-    if (!nonceId || !chronosId) return null;
-
-    return { nonceId, chronosId, cookie, signature: sig, correlationId: corr, timestamp: ts, fingerprint: fp };
   }
 
-  // 1. إرسال رمز OTP
-  async function sendVerificationCode(phoneNumber) {
-    const msisdn = toMsisdn(phoneNumber);
-    const cooldownKey = `cooldown:${msisdn}`;
-    
-    const leftMs = getCooldownLeft(cooldownKey);
-    if (leftMs > 0) {
-      return {
-        statusCode: 429,
-        data: { message: `كثرة المحاولات، أعد المحاولة بعد ${Math.ceil(leftMs / 1000)} ثانية.` }
-      };
-    }
-
-    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST');
-    if (!n) {
-      return { statusCode: 403, data: { message: 'فشل الاتصال بسيرفر الخدمة، أعد المحاولة.' } };
-    }
-
-    const params = new URLSearchParams({
-      client_id: 'myooredoo-app',
-      grant_type: 'password',
-      username: msisdn,
+  async function rawRequest(method, url, headers, body, sid) {
+    const res = await httpRequest(env, {
+      method,
+      url,
+      headers,
+      body,
+      relayKey: 'OOREDOO_RELAY_URL',
+      useDbProxy: true,
+      proxyService: 'ooredoo',
+      sid,
+      timeoutMs: 60000,
+      directFirst: true,
     });
-    if (env.OOREDOO_PASSWORD) {
-      params.append('password', env.OOREDOO_PASSWORD);
+    if (isBlocked(res)) {
+      await registerWafBlock();
+      await markGeoBlock();
+      console.log('[ooredoo] rawRequest blocked:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || (res.data && res.data.message) || '').slice(0, 160));
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true, detail: String(res.text || '').slice(0, 120) } };
     }
+    return { statusCode: res.status || 500, data: parseBody(res.data), text: res.text, via: res.via };
+  }
 
-    const headers = {
-      'User-Agent': 'Dart/3.4 (dart:io)',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'platform': 'android',
-      'X-Platform-Origin': 'mobile-android',
-      'x-msisdn': msisdn,
-      'X-Correlation-ID': n.correlationId,
-      'x-signature': n.signature,
-      'x-version': APP_VERSION,
-      'X-Timestamp': String(n.timestamp),
-      'X-Instance-Id': INSTANCE_ID,
-      'X-Device-Fingerprint': n.fingerprint,
-      'x-force-update': 'true',
-      'x-nonce-id': n.nonceId,
-      'x-chronos-id': n.chronosId,
-      ...(n.cookie ? { Cookie: n.cookie } : {}),
-    };
-
-    const res = await rawRequest('POST', `${BASE_URL}${TOKEN_PATH}`, headers, params.toString());
-
-    if (res.statusCode === 200 || res.statusCode === 403) {
-      setCooldown(cooldownKey, 60000);
-      otpSids.set(msisdn, freshFlowSid());
-      return { statusCode: 200, data: { message: 'تم إرسال الرمز بنجاح', otpRequired: true } };
+  async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
+    const res = await httpRequest(env, {
+      method: 'POST',
+      url: `${base}${CHECKPOINT_PATH}`,
+      headers: {
+        ...commonHeaders({ sig, corr, ts, fp, msisdn, cookie }),
+        'Content-Type': 'application/json',
+        'x-path': path,
+        'x-method': method,
+      },
+      body: '{}',
+      relayKey: 'OOREDOO_RELAY_URL',
+      useDbProxy: true,
+      proxyService: 'ooredoo',
+      sid,
+      timeoutMs: 60000,
+      directFirst: true,
+    });
+    if (isBlocked(res)) {
+      await registerWafBlock();
+      await markGeoBlock();
+      return null;
     }
-
     return res;
   }
 
-  // 2. تأكيد رمز OTP
+  async function nonceHandshake(msisdn, path, method, sid) {
+    const ts = Date.now();
+    const corr = `${ts}-${Math.floor(100 + Math.random() * 900)}`;
+    const fp = await generateDeviceFingerprint(instanceId, msisdn, ts);
+    const sig = xSignature(env);
+    const cp = await checkpoint(sig, corr, ts, fp, msisdn, path, method, undefined, sid);
+    if (!cp) return null;
+    const nonceId = cp.headers && typeof cp.headers.get === 'function' ? cp.headers.get('x-nonce-id') : null;
+    const chronosId = cp.headers && typeof cp.headers.get === 'function' ? cp.headers.get('x-chronos-id') : null;
+    if (!nonceId || !chronosId) return null;
+    return { nonceId, chronosId, cookie: cookieJar(cp.headers), signature: sig, correlationId: corr, timestamp: ts, fingerprint: fp };
+  }
+
+  async function tokenRequest(msisdn, n, params, sid) {
+    const headers = {
+      ...commonHeaders({
+        sig: n.signature,
+        corr: n.correlationId,
+        ts: n.timestamp,
+        fp: n.fingerprint,
+        msisdn,
+        cookie: n.cookie,
+      }),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'x-nonce-id': n.nonceId,
+      'x-chronos-id': n.chronosId,
+    };
+    return rawRequest('POST', `${base}${TOKEN_PATH}`, headers, params.join('&'), sid);
+  }
+
+  async function tokenFlow(msisdn, buildParams, sid) {
+    if ((await geoBlocked()).blocked) {
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    }
+    if (await wafBlocked()) {
+      return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
+    }
+    await withOtpPacing();
+    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
+    if (!n) {
+      console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    }
+    const res = await tokenRequest(msisdn, n, buildParams(), sid);
+    if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
+      console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
+    }
+    return res;
+  }
+
+  // ---------- OTP ----------
+  async function attemptOtpSend(msisdn) {
+    const params = ['client_id=myooredoo-app', 'grant_type=password', `username=${encodeURIComponent(msisdn)}`];
+    if (env.OOREDOO_PASSWORD) params.push(`password=${encodeURIComponent(env.OOREDOO_PASSWORD)}`);
+
+    const flowSid = freshFlowSid(); // IP خروج ثابت لكل تدفق الإرسال (checkpoint+token)
+    const res = await tokenFlow(msisdn, () => params, flowSid);
+    if (res.data && res.data.blocked) return res;
+    if (res.statusCode === 403) {
+      // 403 = أُرسل الرمز وثُبّتت الجلسة على هذا الـ IP → نحفظ SID للتحقق
+      await pinOtpSid(env.DB, msisdn, flowSid);
+      return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
+    }
+    if (res.statusCode === 200) {
+      const data = res.data;
+      if (typeof data === 'string' && /<html/i.test(data)) {
+        await registerWafBlock();
+        return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+      }
+      if (data && data.access_token) return { statusCode: 200, data };
+      return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
+    }
+    return res;
+  }
+
+  async function doVerifyOtp(msisdn, code) {
+    const params = [
+      'grant_type=password',
+      `username=${encodeURIComponent(msisdn)}`,
+      'client_id=myooredoo-app',
+      `otp=${encodeURIComponent(String(code ?? '').trim())}`,
+    ];
+    // نفس SID الذي أرسل الرمز → نفس IP الخروج
+    const pinnedSid = await getPinnedSid(env.DB, msisdn) || freshFlowSid();
+    const res = await tokenFlow(msisdn, () => params, pinnedSid);
+    if (res.statusCode === 200 && res.data && res.data.access_token) {
+      await clearPinnedSid(env.DB, msisdn); // تحقق ناجح → انتهى الربط
+    }
+    return { statusCode: res.statusCode, data: res.data };
+  }
+
+  async function doRefreshToken(msisdn, refreshToken) {
+    const params = [
+      'grant_type=refresh_token',
+      'client_id=myooredoo-app',
+      `refresh_token=${encodeURIComponent(refreshToken)}`,
+    ];
+    const res = await tokenFlow(msisdn, () => params, freshFlowSid());
+    return { statusCode: res.statusCode, data: res.data };
+  }
+
+  // ---------- الواجهات العامة للـ OTP ----------
+  async function sendVerificationCode(phoneNumber) {
+    const msisdn = toMsisdn(phoneNumber);
+    const res = await attemptOtpSend(msisdn);
+    if (res.statusCode === 200 && !(res.data && res.data.blocked)) await resetWafCounter();
+    return res;
+  }
+
   async function verifyCode(phoneNumber, code) {
     const msisdn = toMsisdn(phoneNumber);
-    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST');
-    if (!n) {
-      return { statusCode: 403, data: { message: 'فشل الاتصال بسيرفر الخدمة، أعد المحاولة.' } };
+    const numCooldown = await cooldownLeftMs(env, `oo:otp:num:${msisdn}`);
+    if (numCooldown > 0) {
+      return {
+        statusCode: 429,
+        data: { message: `كثرة المحاولات على هذا الرقم، أعد المحاولة بعد ${Math.max(1, Math.ceil(numCooldown / 1000))} ثانية` },
+      };
     }
-
-    const params = new URLSearchParams({
-      grant_type: 'password',
-      username: msisdn,
-      client_id: 'myooredoo-app',
-      otp: String(code ?? '').trim(),
-    });
-
-    const headers = {
-      'User-Agent': 'Dart/3.4 (dart:io)',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'platform': 'android',
-      'X-Platform-Origin': 'mobile-android',
-      'x-msisdn': msisdn,
-      'X-Correlation-ID': n.correlationId,
-      'x-signature': n.signature,
-      'x-version': APP_VERSION,
-      'X-Timestamp': String(n.timestamp),
-      'X-Instance-Id': INSTANCE_ID,
-      'X-Device-Fingerprint': n.fingerprint,
-      'x-force-update': 'true',
-      'x-nonce-id': n.nonceId,
-      'x-chronos-id': n.chronosId,
-      ...(n.cookie ? { Cookie: n.cookie } : {}),
-    };
-
-    return await rawRequest('POST', `${BASE_URL}${TOKEN_PATH}`, headers, params.toString());
+    const res = await doVerifyOtp(msisdn, code);
+    if (res.statusCode === 401 && !(res.data && res.data.blocked)) {
+      const c = await bumpCounter(env, `oo:otp:401:${msisdn}`);
+      if (c >= 3) await setCooldown(env, `oo:otp:num:${msisdn}`, 30000);
+    } else if (res.statusCode === 200 && res.data && res.data.access_token) {
+      await resetCounter(env, `oo:otp:401:${msisdn}`);
+      await resetCounter(env, `oo:otp:num:${msisdn}`);
+      await resetWafCounter();
+    }
+    return res;
   }
 
-  // 3. تجديد التوكن Refresh Token
-  async function refreshToken(phoneNumber, refreshTokenValue) {
+  async function refreshToken(phoneNumber, refreshToken) {
     const msisdn = toMsisdn(phoneNumber);
-    const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST');
-    if (!n) {
-      return { statusCode: 403, data: { message: 'فشل الاتصال بسيرفر الخدمة، أعد المحاولة.' } };
-    }
-
-    const params = new URLSearchParams({
-      grant_type: 'refresh_token',
-      client_id: 'myooredoo-app',
-      refresh_token: refreshTokenValue,
-    });
-
-    const headers = {
-      'User-Agent': 'Dart/3.4 (dart:io)',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'platform': 'android',
-      'X-Platform-Origin': 'mobile-android',
-      'x-msisdn': msisdn,
-      'X-Correlation-ID': n.correlationId,
-      'x-signature': n.signature,
-      'x-version': APP_VERSION,
-      'X-Timestamp': String(n.timestamp),
-      'X-Instance-Id': INSTANCE_ID,
-      'X-Device-Fingerprint': n.fingerprint,
-      'x-force-update': 'true',
-      'x-nonce-id': n.nonceId,
-      'x-chronos-id': n.chronosId,
-      ...(n.cookie ? { Cookie: n.cookie } : {}),
-    };
-
-    return await rawRequest('POST', `${BASE_URL}${TOKEN_PATH}`, headers, params.toString());
+    return doRefreshToken(msisdn, refreshToken);
   }
 
-  // 4. تصفير الذاكرة
-  function resetAllCooldowns() {
-    memoryStore.clear();
-    otpSids.clear();
-    return { success: true, message: 'تم تصفير جميع العدادات بنجاح' };
+  // ---------- BFF ----------
+  async function authHeaders(token, msisdn, n, extra) {
+    const ts = Date.now();
+    const fp = await generateDeviceFingerprint(instanceId, msisdn, ts);
+    return {
+      'User-Agent': 'Dart/3.4 (dart:io)',
+      Accept: '*/*',
+      'Accept-Encoding': 'gzip',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json; charset=utf-8',
+      platform: 'android',
+      'X-Device-Fingerprint': fp,
+      'x-platform-data-signature': platformDataSignature(instanceId),
+      'x-platform-origin': 'web',
+      'x-signature': xSignature(env),
+      'x-timestamp': freshTimestamp(ts),
+      'x-version': appVersion,
+      'X-Instance-Id': instanceId,
+      'x-force-update': 'true',
+      ...(n.cookie ? { Cookie: n.cookie } : {}),
+      ...extra,
+    };
+  }
+
+  async function bffRequest(method, path, token, msisdn, opts) {
+    if ((await geoBlocked()).blocked) {
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    }
+    if (await wafBlocked()) {
+      return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
+    }
+    // IP الخروج يجب أن يطابق IP إصدار التوكن وإلا رفضت أوريدو (401).
+    // نستخدم نفس الـ sid المثبّت أثناء التحقق (أو جديد) لكلا طلبي checkpoint+BFF.
+    const sid = (await getPinnedSid(env.DB, msisdn)) || freshFlowSid();
+    const n = await nonceHandshake(msisdn, path, method, sid);
+    if (!n) return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    const { body, extraHeaders } = opts || {};
+    const headers = await authHeaders(token, msisdn, n, {
+      'x-msisdn': msisdn,
+      'x-nonce-id': n.nonceId,
+      'x-chronos-id': n.chronosId,
+      ...(extraHeaders || {}),
+    });
+    return rawRequest(method, `${base}${path}`, headers, body, sid);
+  }
+
+  const BFF = {
+    dashboardSync: (o) => bffRequest('GET', '/api/ooredoo-bff/dashboard/database/sync', o.token, o.msisdn),
+    flariePlayerToken: (o) => bffRequest('GET', '/api/ooredoo-bff/flarie/player/token', o.token, o.msisdn),
+    gamificationStatus: (o) => bffRequest('GET', '/api/ooredoo-bff/gamification/status', o.token, o.msisdn),
+    gamificationHistory: (o) => bffRequest('GET', '/api/ooredoo-bff/gamification/history', o.token, o.msisdn),
+    playGamification: (o) => bffRequest('GET', '/api/ooredoo-bff/gamification/play', o.token, o.msisdn),
+    snapchatEligibility: (o) => bffRequest('GET', '/api/ooredoo-bff/snap-chat/eligibility', o.token, o.msisdn),
+    applySnapchat: (o) => bffRequest('POST', '/api/ooredoo-bff/snap-chat/apply', o.token, o.msisdn, { body: '' }),
+    accountInfo: (o) => bffRequest('GET', '/api/ooredoo-bff/bundle/getActivePackages', o.token, o.msisdn),
+    userInfo: (o) =>
+      bffRequest('GET', '/api/ooredoo-bff/userInfo/personal', o.token, o.msisdn, {
+        extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8' },
+      }),
+  };
+
+  function purchaseByop({ token, msisdn, code }) {
+    const isLimited = BYOP_LIMITED_CODES.includes(code);
+    return bffRequest('POST', '/api/ooredoo-bff/bundle/purchase/byop', token, msisdn, {
+      body: JSON.stringify({
+        validity: byopValidity,
+        limitedBundleDetails: isLimited ? [code] : [],
+        unlimitedBundleDetails: isLimited ? [] : [code],
+      }),
+    });
   }
 
   return {
     sendVerificationCode,
     verifyCode,
     refreshToken,
-    resetAllCooldowns,
+    ...BFF,
+    purchaseByop,
+    BYOP_CODES,
+    BYOP_LIMITED_CODES,
+    markGeoBlock,
   };
 }
