@@ -35,7 +35,7 @@ function toMsisdn(phoneNumber) {
   return `213${digits.replace(/^0/, '')}`;
 }
 
-export function createOoredooService() {
+export function createOoredoo(env = process.env) {
   // دالة إرسال الطلبات الأساسية باستخدام fetch المدمجة
   async function rawRequest(method, url, headers, data) {
     try {
@@ -53,13 +53,12 @@ export function createOoredooService() {
         parsedData = text;
       }
 
-      // فحص ما إذا كان هناك حجب WAF حقيقي (صفحة HTML أو أخطاء Origin)
+      // فحص حجب WAF (صفحات HTML أو أخطاء Origin)
       const isHtml = typeof text === 'string' && /<html|<!doctype/i.test(text);
       if (response.status >= 520 || isHtml) {
         return { statusCode: 403, data: { message: 'حجب شبكي مؤقت', isWafBlock: true } };
       }
 
-      // استخراج الكوكيز إن وجدت
       const setCookie = response.headers.get('set-cookie');
 
       return {
@@ -117,7 +116,6 @@ export function createOoredooService() {
     const msisdn = toMsisdn(phoneNumber);
     const cooldownKey = `cooldown:${msisdn}`;
     
-    // التحقق من مهلة الانتظار بين الطلبات للرقم نفسه
     const leftMs = getCooldownLeft(cooldownKey);
     if (leftMs > 0) {
       return {
@@ -136,8 +134,8 @@ export function createOoredooService() {
       grant_type: 'password',
       username: msisdn,
     });
-    if (process.env.OOREDOO_PASSWORD) {
-      params.append('password', process.env.OOREDOO_PASSWORD);
+    if (env.OOREDOO_PASSWORD) {
+      params.append('password', env.OOREDOO_PASSWORD);
     }
 
     const headers = {
@@ -160,9 +158,8 @@ export function createOoredooService() {
 
     const res = await rawRequest('POST', `${BASE_URL}${TOKEN_PATH}`, headers, params.toString());
 
-    // حالة 200 أو 403 تُعتبر نجاح إرسال الرمز في بروتوكول أوريدو
     if (res.statusCode === 200 || res.statusCode === 403) {
-      setCooldown(cooldownKey, 60000); // إجبار مهلة 60 ثانية قبل الإرسال القادم
+      setCooldown(cooldownKey, 60000);
       otpSids.set(msisdn, freshFlowSid());
       return { statusCode: 200, data: { message: 'تم إرسال الرمز بنجاح', otpRequired: true } };
     }
@@ -241,11 +238,11 @@ export function createOoredooService() {
     return await rawRequest('POST', `${BASE_URL}${TOKEN_PATH}`, headers, params.toString());
   }
 
-  // 4. تصفير الذاكرة يدوياً عند الحاجة
+  // 4. تصفير الذاكرة
   function resetAllCooldowns() {
     memoryStore.clear();
     otpSids.clear();
-    return { success: true, message: 'تم تصفير جميع العدادات والذاكرة بنجاح' };
+    return { success: true, message: 'تم تصفير جميع العدادات بنجاح' };
   }
 
   return {
