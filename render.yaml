@@ -1,0 +1,46 @@
+# ============================================================
+# BZFBDZ-node — Render Blueprint
+# يُنشئ خدمة ويب + قاعدة PostgreSQL مجانية، ويربط DATABASE_URL تلقائياً.
+# المسارات: /webhook (فيسبوك)، /tg/webhook (تلغرام)، /ig/webhook (انستغرام)
+# ============================================================
+services:
+  - type: web
+    name: bzfbdz-bot
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bzfbdz-db
+          property: connectionString
+      - key: VERIFY_TOKEN
+        value: 123123123
+        sync: false
+      - key: DIAG_KEY
+        sync: false
+      - key: X_SIGNATURE
+        value: 634efc7e419e3f5797ec445e29176c525cee4bfc17de0a8f4c399da5a3628ac1
+      - key: DJEZZY_CLIENT_ID
+        value: 6E6CwTkp8H1CyQxraPmcEJPQ7xka
+      - key: DJEZZY_CLIENT_SECRET
+        sync: false
+      - key: API_BASE_URL_OOREDOO
+        value: https://apis.ooredoo.dz
+      - key: OOREDOO_MODERN_PLANS
+        value: "N'YOOZ,DIMA,682,654,736"
+      - key: OOREDOO_SNAPCHAT_PLANS
+        value: "N'YOOZ,682,736"
+      - key: OOREDOO_BYOP_PLANS
+        value: "N'YOOZ,682,736"
+      - key: OOREDOO_GIFT_COOLDOWN_HOURS
+        value: "24"
+
+databases:
+  - name: bzfbdz-db
+    plan: free
+    databaseName: bzfbdz

@@ -1,0 +1,20 @@
+{
+  "name": "bzfbdz-node",
+  "version": "1.0.0",
+  "description": "بوت خدمات الاتصالات (دجيزي/أوريدو) — نسخة Node.js تعمل على Render مع PostgreSQL (بديل Cloudflare Worker + D1)",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "typecheck": "node --check server.js && node --check src/index.js && node --check src/tg-index.js && node --check src/ig-index.js && node --check src/bot.js && node --check src/config.js && node --check src/cooldowns.js && node --check src/db.js && node --check src/keywords.js && node --check src/messenger.js && node --check src/instagram.js && node --check src/rateLimit.js && node --check src/session.js && node --check src/telegram.js && node --check src/users.js && node --check src/util.js && node --check src/runtime/db.js && node --check src/runtime/env.js && node --check src/runtime/shims.js && node --check src/services/djezzy.js && node --check src/services/http.js && node --check src/services/ooredoo.js && node --check src/services/ooredooSign.js && node --check src/services/proxy.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "https-proxy-agent": "^7.0.6",
+    "pg": "^8.13.1"
+  }
+}
