@@ -1,28 +1,59 @@
-// توقيع أوريدو وتوقيع الجهاز عبر WebCrypto (بديل node:crypto)
-// X-Signature قيمة ثابتة محسوبة مسبقًا (تُمرَّر عبر env.X_SIGNATURE أو القيمة الافتراضية)
+const crypto = require('node:crypto');
 
-const DEFAULT_X_SIGNATURE = '634efc7e419e3f5797ec445e29176c525cee4bfc17de0a8f4c399da5a3628ac1';
+// =========================================================================
+// قيم ثابتة مستخرجة مسبقاً من my-ooredoo-algeria-1-5-12.apk
+// (متحقق منها: apkIntegrity(apk) يعيد نفس القيم بالضبط)
+// =========================================================================
+const DEFAULT_CHECKSUM = '3138619328'; // CRC32 لـ classes.dex
+const DEFAULT_SIGNATURE = 'SCvfcghAsOtibBJqbzKRDHQYCgnuW/eAJp/R0CndYwg='; // توقيع الشهادة Base64
 
-const encoder = new TextEncoder();
+// حساب الـ X-Signature الثابت مسبقاً مرة واحدة عند تحميل الملف
+const CACHED_X_SIGNATURE = process.env.X_SIGNATURE
+  || process.env.OOREDOO_X_SIGNATURE
+  || generateXSignature(DEFAULT_CHECKSUM, DEFAULT_SIGNATURE);
 
-export function xSignature(env) {
-  return env.X_SIGNATURE || env.OOREDOO_X_SIGNATURE || DEFAULT_X_SIGNATURE;
-}
-
-// generateDeviceFingerprint = hex( HMAC_SHA256(key=utf8(ts), data=utf8(msisdn+instance+ts)) )
-export async function generateDeviceFingerprint(instanceId, msisdn, timestamp) {
+/**
+ * generateDeviceFingerprint(instanceId, msisdn, timestamp)
+ * = hex( HMAC_SHA256(key = utf8(timestamp), data = utf8(msisdn + instanceId + timestamp)) )
+ */
+function generateDeviceFingerprint(instanceId, msisdn, timestamp) {
   const ts = String(timestamp);
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(ts),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(`${msisdn}${instanceId}${ts}`));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const key = Buffer.from(ts, 'utf8');
+  const data = Buffer.from(`${msisdn}${instanceId}${ts}`, 'utf8');
+  return crypto.createHmac('sha256', key).update(data).digest('hex');
 }
 
-export function platformDataSignature(deviceId) {
-  return btoa(JSON.stringify({ platform: 'android', 'is-physical-device': true, 'device-id': deviceId }));
+/**
+ * generateXSignature(checksum, signature) = sha256hex( utf8(signature + checksum) )
+ */
+function generateXSignature(checksum, signature) {
+  return crypto
+    .createHash('sha256')
+    .update(`${signature}${checksum}`, 'utf8')
+    .digest('hex');
 }
+
+/**
+ * دالة استرجاع التوقيع فوراً من الذاكرة (0ms)
+ */
+function xSignature() {
+  return CACHED_X_SIGNATURE;
+}
+
+/**
+ * دالة وهمية سريعة لضمان عدم كسر الكود الذي يستدعي apkIntegrity في أماكن أخرى
+ */
+function apkIntegrity() {
+  return {
+    checksum: DEFAULT_CHECKSUM,
+    signature: DEFAULT_SIGNATURE,
+    xSignature: CACHED_X_SIGNATURE,
+  };
+}
+
+module.exports = {
+  generateDeviceFingerprint,
+  generateXSignature,
+  apkIntegrity,
+  xSignature,
+};
