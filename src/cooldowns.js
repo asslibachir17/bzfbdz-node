@@ -38,6 +38,26 @@ export async function checkAndSetCooldown(env, key, cooldownMs, t = Date.now()) 
   return { ok: true, leftMs: 0 };
 }
 
+// فحص + تسجيل في عملية واحدة (UPSERT) — رحلة شبكة واحدة بدل اثنتين.
+// إن كانت القديمة ما زالت قائمة (لم تنتهِ) نبقيها (using ? placeholder = t)،
+// وإلا نضع الجديدة (المعامل الثاني = until الجديد).
+export async function checkAndSetCooldownOne(env, key, cooldownMs, t = Date.now()) {
+  const until = t + cooldownMs;
+  const row = await first(
+    env,
+    `INSERT INTO cooldowns (key, until, counter) VALUES (?2, ?3, 1)
+     ON CONFLICT(key) DO UPDATE SET
+       until = CASE WHEN cooldowns.until > ?1 THEN cooldowns.until ELSE excluded.until END,
+       counter = cooldowns.counter
+     RETURNING until`,
+    t,
+    key,
+    until
+  );
+  const left = row ? Number(row.until) - t : 0;
+  return left > 0 ? { ok: false, leftMs: left } : { ok: true, leftMs: 0 };
+}
+
 // عدّاد متصاعد محفوظ (للحجب بعد N محاولات): يرجع العدد الحالي
 export async function bumpCounter(env, key, t = Date.now()) {
   const row = await first(

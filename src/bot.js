@@ -18,7 +18,7 @@ import {
   setUserTimestamp,
   getOoredooTimestamps,
 } from './users.js';
-import { checkAndSetCooldown, setCooldown, clearCooldown, cooldownLeftMs } from './cooldowns.js';
+import { checkAndSetCooldown, checkAndSetCooldownOne, setCooldown, clearCooldown, cooldownLeftMs } from './cooldowns.js';
 import { fastFloodGate, checkRateLimit, isDuplicatePayload } from './rateLimit.js';
 import { loadSession, saveSession, getMenuContext } from './session.js';
 import { matchKeywordIntent, buildFallbackOptions } from './keywords.js';
@@ -153,7 +153,7 @@ function createBot(env, ctx, platform = "fb") {
     const mid = ev?.message?.mid;
     if (mid) {
       const _tm = Date.now();
-      const seen = await checkAndSetCooldown(env, `mid:${mid}`, 5 * 60 * 1e3);
+      const seen = await checkAndSetCooldownOne(env, `mid:${mid}`, 5 * 60 * 1e3);
       const _tmDt = Date.now() - _tm;
       if (_tmDt > 100) console.log(`[perf-mid] mid-check took ${_tmDt}ms`);
       if (!seen.ok)
