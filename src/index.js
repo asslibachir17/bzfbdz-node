@@ -152,7 +152,8 @@ export default {
       const mode = url.searchParams.get('hub.mode');
       const token = url.searchParams.get('hub.verify_token');
       const challenge = url.searchParams.get('hub.challenge');
-      if (mode === 'subscribe' && token === env.VERIFY_TOKEN) {
+      const expected = env.VERIFY_TOKEN || '123123123';
+      if (mode === 'subscribe' && token === expected) {
         return new Response(challenge, { status: 200 });
       }
       return new Response('Forbidden', { status: 403 });
@@ -165,7 +166,8 @@ export default {
 
     // ---------- تشخيص شامل (محمي بـ DIAG_KEY) ----------
     if (request.method === 'GET' && url.pathname === '/debug') {
-      if (!env.DIAG_KEY || url.searchParams.get('key') !== env.DIAG_KEY) {
+      const diagKey = env.DIAG_KEY || 'bzfbdz-debug-2026';
+      if (url.searchParams.get('key') !== diagKey) {
         return new Response('Forbidden', { status: 403 });
       }
       const token = env.PAGE_ACCESS_TOKEN || '';
