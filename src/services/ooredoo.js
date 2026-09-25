@@ -229,8 +229,15 @@ export function createOoredoo(env) {
     }
     await withOtpPacing();
     const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
-    if (!n) return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
-    return tokenRequest(msisdn, n, buildParams(), sid);
+    if (!n) {
+      console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
+      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    }
+    const res = await tokenRequest(msisdn, n, buildParams(), sid);
+    if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
+      console.log('[ooredoo] tokenFlow tokenRequest: status', res.statusCode, 'via', res.via, 'body', String(res.text || (res.data && res.data.message) || '').slice(0, 200));
+    }
+    return res;
   }
 
   // ---------- OTP ----------
