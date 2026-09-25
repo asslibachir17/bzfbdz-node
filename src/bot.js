@@ -119,21 +119,20 @@ function createBot(env, ctx, platform = "fb") {
   }
   function floodGate(body) {
     const events = extractEvents(body);
-    let allowed = true;
+    if (!events.length) return false;
     for (const ev of events) {
       const sender = ev?.sender?.id;
-      if (sender && !fastFloodGate(sender, rc)) {
-        allowed = false;
-        break;
-      }
+      if (sender && !fastFloodGate(sender, rc)) return false;
     }
-    return allowed;
+    return true;
   }
   async function process(body) {
     const events = extractEvents(body);
+    let processed = 0;
     for (const ev of events) {
       try {
         await processEvent(ev);
+        processed++;
       } catch (e) {
         console.error("[BOT] خطأ في معالجة حدث:", e.message, e.stack);
         try {
@@ -142,6 +141,8 @@ function createBot(env, ctx, platform = "fb") {
         } catch {}
       }
     }
+    console.log(`[bot] processed ${processed}/${events.length} events`);
+    return processed;
   }
   async function processEvent(ev) {
     const sender = ev?.sender?.id;
@@ -172,12 +173,11 @@ function createBot(env, ctx, platform = "fb") {
         await saveSession(env, session);
         return;
       }
-      await messenger.markSeen(sender);
+      // القرأة أُرسلت فورًا في الويب هوك (index.js)؛ هنا نبدأ مؤشر الكتابة فقط.
       await messenger.typingOn(sender);
       await handleMessage(sender, ev.message, session);
     } else if (ev.postback) {
       if (ev.postback.title || ev.postback.payload) {
-        await messenger.markSeen(sender);
         await messenger.typingOn(sender);
       }
       await handlePostback(sender, ev.postback, session);
@@ -2090,6 +2090,7 @@ ${lines.join("\n").trim()}`;
   }
   return {
     floodGate,
-    process
+    process,
+    markSeenFb: async (sender) => messenger.markSeen(sender),
   };
 }

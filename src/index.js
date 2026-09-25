@@ -327,17 +327,32 @@ export default {
         return new Response('EVENT_RECEIVED', { status: 200 });
       }
 
+      // قرأة فورية: نُعلِم فيسبوك بأن المستخدم "شوهد" فورًا بدون انتظار DB أو الطابور،
+      // فلا يبقى السؤال "غير مقروء" فترة طويلة أثناء المعالجة/الانتظار.
+      const seenTargets = new Set();
+      for (const e of body?.entry || []) {
+        for (const m of e.messaging || []) {
+          const s = m?.sender?.id;
+          if (s && ((m.message && !m.message.is_echo) || m.postback)) seenTargets.add(s);
+        }
+      }
+      for (const s of seenTargets) bot.markSeenFb(s).catch(() => {});
+      seenTargets.clear();
+
       // نرد 200 فورًا لفيسبوك ثم نعالج في الخلفية: المعالجة المتزامنة الطويلة (مثل
       // تفعيل 2Go عبر البروكسي قد تستغرق 15-30 ثانية) تجعل فيسبوك يعيد تسليم نفس
       // الحدث ← يتكرر الرد عدة مرات. الرد الفوري يمنع إعادة التسليم نهائيًا.
       // نظام الضغط: تزامن محدود + طابور مهلة + فتاحة دائرة على فشل الخدمات الخارجية.
+      // مهم: لا نُسقط أي رسالة أبدًا — عند رفض الحارس (دارة/طابور ممتلئ/مهلة)
+      // نعالجها بدون حارس في الخلفية حتى يصل المستخدم دائمًا إلى رد.
+      const fallback = () => {
+        bot.process(body).catch((e2) => console.log('[webhook] fallback processing error:', e2.message));
+      };
       getLoadGuard('webhook', env)
         .run(() => bot.process(body), {
-          onCircuitOpen: async () => {
-            console.log('[webhook] load-guard open — dropped inline (EVENT_RECEIVED)');
-          },
+          onCircuitOpen: fallback,
         })
-        .catch((e) => console.log('[webhook] load-guard:', e.message));
+        .catch(() => fallback());
       return new Response('EVENT_RECEIVED', { status: 200 });
     }
 

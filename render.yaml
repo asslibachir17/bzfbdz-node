@@ -43,6 +43,17 @@ services:
         value: "N'YOOZ,682,736"
       - key: OOREDOO_GIFT_COOLDOWN_HOURS
         value: "24"
+      # ضغط المعالجة: webhook أوسع (رسائل سريعة لا تنتظر خلف مهام OTP البطيئة)
+      - key: LOAD_MAX_CONCURRENCY
+        value: "8"
+      - key: WEBHOOK_LOAD_MAX_CONCURRENCY
+        value: "30"
+      - key: WEBHOOK_LOAD_MAX_QUEUE
+        value: "500"
+      - key: WEBHOOK_LOAD_QUEUE_TTL_MS
+        value: "15000"
+      - key: LOAD_QUEUE_TTL_MS
+        value: "12000"
 
 databases:
   - name: bzfbdz-db

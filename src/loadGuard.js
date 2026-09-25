@@ -158,13 +158,15 @@ const _guards = new Map();
 // يُنشئ أو يعيد حارساً بحسب الاسم (مثال: 'otp', 'webhook', 'bot')
 export function getLoadGuard(name, env = {}) {
   if (!_guards.has(name)) {
+    // قيمة خاصة بالاسم لها الأولوية (WEBHOOK_LOAD_MAX_CONCURRENCY...) ثم العامة
+    const n = (suffix) => env?.[`${String(name).toUpperCase()}_LOAD_${suffix}`] ?? env?.[`LOAD_${suffix}`];
     const o = {
-      maxConcurrency: Number(env?.LOAD_MAX_CONCURRENCY) || DEFAULTS.maxConcurrency,
-      maxQueue: Number(env?.LOAD_MAX_QUEUE) || DEFAULTS.maxQueue,
-      queueTtlMs: Number(env?.LOAD_QUEUE_TTL_MS) || DEFAULTS.queueTtlMs,
-      breakerThreshold: Number(env?.LOAD_BREAKER_THRESHOLD) || DEFAULTS.breakerThreshold,
-      breakerMinSamples: Number(env?.LOAD_BREAKER_MIN_SAMPLES) || DEFAULTS.breakerMinSamples,
-      breakerCooldownMs: Number(env?.LOAD_BREAKER_COOLDOWN_MS) || DEFAULTS.breakerCooldownMs,
+      maxConcurrency: Number(n('MAX_CONCURRENCY')) || DEFAULTS.maxConcurrency,
+      maxQueue: Number(n('MAX_QUEUE')) || DEFAULTS.maxQueue,
+      queueTtlMs: Number(n('QUEUE_TTL_MS')) || DEFAULTS.queueTtlMs,
+      breakerThreshold: Number(n('BREAKER_THRESHOLD')) || DEFAULTS.breakerThreshold,
+      breakerMinSamples: Number(n('BREAKER_MIN_SAMPLES')) || DEFAULTS.breakerMinSamples,
+      breakerCooldownMs: Number(n('BREAKER_COOLDOWN_MS')) || DEFAULTS.breakerCooldownMs,
     };
     _guards.set(name, new LoadGuard(o));
   }
