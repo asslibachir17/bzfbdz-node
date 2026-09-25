@@ -1,4 +1,4 @@
-// عميل أوريدو — إعادة كتابة كاملة لتعمل على Cloudflare Workers (WebCrypto + fetch)
+import crypto from 'node:crypto';
 import { httpRequest } from './http.js';
 import { xSignature, generateDeviceFingerprint, platformDataSignature } from './ooredooSign.js';
 import { sleep } from '../util.js';
@@ -12,35 +12,45 @@ const WAF_MAX = 180000; // أقصى كولدداون عند حجب شبكي مت
 
 // ---------- تثبيت SID (نفس IP الخروج) بين إرسال/تحقق OTP ----------
 const SID_PREFIX = 'sid-';
+const inMemoryOtpSids = new Map();
 
 function freshFlowSid() {
-  const bytes = crypto.getRandomValues(new Uint8Array(5));
-  return SID_PREFIX + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const bytes = crypto.randomBytes(5);
+  return SID_PREFIX + bytes.toString('hex');
 }
 
 async function pinOtpSid(db, msisdn, sid) {
-  try {
-    await db.prepare('INSERT INTO otp_sids (msisdn, sid, created_at) VALUES (?, ?, ?) ON CONFLICT(msisdn) DO UPDATE SET sid = excluded.sid, created_at = excluded.created_at')
-      .bind(msisdn, sid, Date.now())
-      .run();
-  } catch (e) {
-    console.log(`[Ooredoo] فشل حفظ SID: ${e.message}`);
+  if (db && typeof db.prepare === 'function') {
+    try {
+      await db.prepare('INSERT INTO otp_sids (msisdn, sid, created_at) VALUES (?, ?, ?) ON CONFLICT(msisdn) DO UPDATE SET sid = excluded.sid, created_at = excluded.created_at')
+        .bind(msisdn, sid, Date.now())
+        .run();
+      return;
+    } catch (e) {
+      console.log(`[Ooredoo] فشل حفظ SID في DB: ${e.message}`);
+    }
   }
+  inMemoryOtpSids.set(msisdn, { sid, createdAt: Date.now() });
 }
 
 async function getPinnedSid(db, msisdn) {
-  try {
-    const row = await db.prepare('SELECT sid FROM otp_sids WHERE msisdn = ?').bind(msisdn).first();
-    return row ? row.sid : null;
-  } catch {
-    return null;
+  if (db && typeof db.prepare === 'function') {
+    try {
+      const row = await db.prepare('SELECT sid FROM otp_sids WHERE msisdn = ?').bind(msisdn).first();
+      if (row) return row.sid;
+    } catch {}
   }
+  const item = inMemoryOtpSids.get(msisdn);
+  return item ? item.sid : null;
 }
 
 async function clearPinnedSid(db, msisdn) {
-  try {
-    await db.prepare('DELETE FROM otp_sids WHERE msisdn = ?').bind(msisdn).run();
-  } catch {}
+  if (db && typeof db.prepare === 'function') {
+    try {
+      await db.prepare('DELETE FROM otp_sids WHERE msisdn = ?').bind(msisdn).run();
+    } catch {}
+  }
+  inMemoryOtpSids.delete(msisdn);
 }
 
 function parseBody(data) {
@@ -69,14 +79,18 @@ function isBlocked(res) {
 }
 
 function cookieJar(headers) {
+  if (!headers) return '';
   try {
-    if (headers && typeof headers.getSetCookie === 'function') {
+    if (typeof headers.getSetCookie === 'function') {
       const raw = headers.getSetCookie();
       if (raw && raw.length) return raw.map((c) => c.split(';')[0]).filter(Boolean).join('; ');
     }
   } catch {}
   try {
-    const s = headers && typeof headers.get === 'function' ? headers.get('set-cookie') : '';
+    const s = typeof headers.get === 'function' ? headers.get('set-cookie') : (headers['set-cookie'] || '');
+    if (Array.isArray(s)) {
+      return s.map((c) => c.split(';')[0]).filter(Boolean).join('; ');
+    }
     if (s) return s.split(',').map((c) => c.split(';')[0]).filter(Boolean).join('; ');
   } catch {}
   return '';
@@ -88,14 +102,14 @@ function freshTimestamp(ms) {
   return `${base}.${micro}Z`;
 }
 
-export function createOoredoo(env) {
-  const base = env.API_BASE_URL_OOREDOO || 'https://apis.ooredoo.dz';
-  const appVersion = env.APP_VERSION || '1.5.12';
-  const instanceId = env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
-  const byopValidity = env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
+export function createOoredoo(env = {}) {
+  const base = env.API_BASE_URL_OOREDOO || process.env.API_BASE_URL_OOREDOO || 'https://apis.ooredoo.dz';
+  const appVersion = env.APP_VERSION || process.env.APP_VERSION || '1.5.15';
+  const instanceId = env.OOREDOO_INSTANCE_ID || process.env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
+  const byopValidity = env.OOREDOO_BYOP_VALIDITY || process.env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
 
-  const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
-  const BYOP_LIMITED_CODES = String(env.OOREDOO_BYOP_LIMITED_CODES || '')
+  const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', env.OOREDOO_BYOP_TT_CODE || process.env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
+  const BYOP_LIMITED_CODES = String(env.OOREDOO_BYOP_LIMITED_CODES || process.env.OOREDOO_BYOP_LIMITED_CODES || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -154,7 +168,7 @@ export function createOoredoo(env) {
       useDbProxy: true,
       proxyService: 'ooredoo',
       sid,
-      timeoutMs: 60000,
+      timeoutMs: 25000,
       directFirst: true,
     });
 
@@ -182,7 +196,7 @@ export function createOoredoo(env) {
       useDbProxy: true,
       proxyService: 'ooredoo',
       sid,
-      timeoutMs: 60000,
+      timeoutMs: 25000,
       directFirst: true,
     });
 
@@ -201,8 +215,14 @@ export function createOoredoo(env) {
     const cp = await checkpoint(sig, corr, ts, fp, msisdn, path, method, undefined, sid);
     if (!cp) return null;
 
-    const nonceId = cp.headers && typeof cp.headers.get === 'function' ? cp.headers.get('x-nonce-id') : null;
-    const chronosId = cp.headers && typeof cp.headers.get === 'function' ? cp.headers.get('x-chronos-id') : null;
+    const getHeader = (key) => {
+      if (!cp.headers) return null;
+      if (typeof cp.headers.get === 'function') return cp.headers.get(key);
+      return cp.headers[key] || cp.headers[key.toLowerCase()];
+    };
+
+    const nonceId = getHeader('x-nonce-id');
+    const chronosId = getHeader('x-chronos-id');
     if (!nonceId || !chronosId) return null;
 
     return { nonceId, chronosId, cookie: cookieJar(cp.headers), signature: sig, correlationId: corr, timestamp: ts, fingerprint: fp };
@@ -246,8 +266,9 @@ export function createOoredoo(env) {
 
   // ---------- OTP ----------
   async function attemptOtpSend(msisdn) {
+    const password = env.OOREDOO_PASSWORD || process.env.OOREDOO_PASSWORD;
     const params = ['client_id=myooredoo-app', 'grant_type=password', `username=${encodeURIComponent(msisdn)}`];
-    if (env.OOREDOO_PASSWORD) params.push(`password=${encodeURIComponent(env.OOREDOO_PASSWORD)}`);
+    if (password) params.push(`password=${encodeURIComponent(password)}`);
 
     const flowSid = freshFlowSid();
     const res = await tokenFlow(msisdn, () => params, flowSid);
@@ -287,11 +308,11 @@ export function createOoredoo(env) {
     return { statusCode: res.statusCode, data: res.data };
   }
 
-  async function doRefreshToken(msisdn, refreshToken) {
+  async function doRefreshToken(msisdn, refreshTokenToken) {
     const params = [
       'grant_type=refresh_token',
       'client_id=myooredoo-app',
-      `refresh_token=${encodeURIComponent(refreshToken)}`,
+      `refresh_token=${encodeURIComponent(refreshTokenToken)}`,
     ];
     const res = await tokenFlow(msisdn, () => params, freshFlowSid());
     return { statusCode: res.statusCode, data: res.data };
