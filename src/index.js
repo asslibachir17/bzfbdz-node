@@ -200,6 +200,8 @@ export default {
         ok: true,
         db: dbBackend,
         hasDatabaseUrl: /^postgres(ql)?:\/\//i.test(env.DATABASE_URL || ''),
+        git: process.env.RENDER_GIT_COMMIT || env.RENDER_GIT_COMMIT || null,
+        deployedAt: new Date().toISOString(),
       };
       return new Response(JSON.stringify(data), {
         status: 200,
