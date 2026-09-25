@@ -106,13 +106,15 @@ export function createOoredoo(env) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // ---------- كولدداونات الحجب (مطابقة للأصل: تمنع إعادة المحاولة المحجوبة فورًا) ----------
+// ---------- كولدداونات الحجب ----------
+  // تم تعطيل oo:geo مؤقتًا لتجنب إغلاق الخدمة أمام أرقام أوريدو.
+  //الحماية الحقيقية هي WAF المتصاعد (يتطلب تكرار ≥2).
   async function geoBlocked() {
-    const left = await cooldownLeftMs(env, 'oo:geo');
-    return { blocked: left > 0, leftMs: left };
+    return false;
   }
+  async function markGeoBlock() {}
   async function markGeoBlock() {
-    await extendCooldown(env, 'oo:geo', 30 * 60 * 1e3);
+    await extendCooldown(env, 'oo:geo', 90 * 1e3);
   }
   async function wafBlocked() {
     return (await cooldownLeftMs(env, 'oo:waf')) > 0;
