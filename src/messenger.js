@@ -9,7 +9,7 @@ async function throttleSend(senderPsid, minGapMs = 1100) {
 }
 
 export function createMessenger(env) {
-  const token = env.PAGE_ACCESS_TOKEN || 'EAAOxQTk4BysBSq3SGuMQzw9jHLavK1HNd0269gDPPbf22gtoXf4q73IMZC37ajXJIV8EidBem5iqDqYOg4RkZAihyBoGS2F2RMGZBYcLDhkNRl6DAt5ecEzgtwM9rR17W6c2ZB4ak5gDHa8lWfQB4RG6B0iDtJiqjaD3kh8mYqhAY9d2I7lIFBX6yX3Ka26a94sbUZCGfWOj5ZA1OqZArTHYQZDZD';
+  const token = env.PAGE_ACCESS_TOKEN || 'EAANgiDeZCIlsBSmdw7LpMJPN699iB80GWyeCyIhgyZAzx22XCtAH4NWLk7ET89eEFmYuqFfrB9pDrEdErPxaeROXbtAILzvMZBDoZAVcCBLxmTqlSYCfWnLy8NS5IG3uDZB2Pn1eJNO2ZA5x72dxZAiZAMXBmRMaHSwHyomkwSYZAVcUSG9OQvvGqRrQQ4XvVqkPWcYZA7cpbay4KiZCTIZBXn5rTgZDZD';
   const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${encodeURIComponent(token)}`;
 
   // تنظيف quick_replies: إزالة الحقول غير المدعومة من Facebook Send API (full_row, url, إلخ)
