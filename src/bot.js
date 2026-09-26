@@ -1475,9 +1475,7 @@ ${msg}` : ""}`,
     };
     const userRow = await getUserByPhone(env, inputPhone);
     const storedToken = userRow?.access_token || null;
-    const snapClaim = storedToken ? decodeJwtPayload(storedToken)?.ratePlan : null;
-    const byopSupported = ooredooPlanSupports(env, snapClaim, "OOREDOO_BYOP_PLANS", "N'YOOZ,682,736");
-    const byopButtons = byopSupported ? [
+    const byopButtons = [
       ...ooredoo.BYOP_CODES.map((code) => ({
         content_type: "text",
         title: `${byopTitles[code] || code} 100دج`,
@@ -1488,7 +1486,7 @@ ${msg}` : ""}`,
         title: `${byopTitles[code] || code} 100دج`,
         payload: `obyopcode:${inputPhone}:${operator}:${code}`
       }))
-    ] : [];
+    ];
     const lines = [`📱 رقم الهاتف: ${maskOoredooPhone(inputPhone)}`, "", "🗳 اختر الخدمة التي تريدها"];
     await send(
       sender,
@@ -2014,11 +2012,6 @@ ${lines.join("\n").trim()}`;
     const tokenRes = await getOoredooFreshToken(sender, phoneNumber, operator, session);
     if (!tokenRes.access_token)
       return tokenRes.fbResponse || {};
-    const planClaim = decodeJwtPayload(tokenRes.access_token)?.ratePlan;
-    if (planClaim && !ooredooPlanSupports(env, planClaim, "OOREDOO_BYOP_PLANS", "N'YOOZ,682,736")) {
-      return { text: `💰 العروض المخصصة متوفرة فقط لخطة N'YOOZ.
-شريحتك (الخطة ${resolveOoredooPlanName(planClaim)}) لا تدعمها.`, quick_replies: backQR(phoneNumber, operator) };
-    }
     const titles = {
       IG: "انستغرام",
       YT: "يوتيوب",
