@@ -131,6 +131,26 @@ export function createOoredoo(env) {
   }
 
   async function rawRequest(method, url, headers, body, sid) {
+    // إذا ضُبط OOREDOO_RELAY_URL (وركر oo-relay يخرج من Cloudflare IP غير محجوب)
+    // فهو الطريق المعتمد لأوريدو: بدون direct (والذي على Render يعود HTML حجب) ولا
+    // بروكسيات معطوبة — نمرر الطلب عبر الوركر مباشرةً.
+    if (env.OOREDOO_RELAY_URL) {
+      const r = await httpRequest(env, {
+        method,
+        url,
+        headers,
+        body,
+        relayKey: 'OOREDOO_RELAY_URL',
+        useDbProxy: false,
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (r && r.status) {
+        console.log('[ooredoo] rawRequest via relay:', method, url.split('/').pop(), 'status=', r.status, 'via=', r.via);
+        return { statusCode: r.status || 500, data: parseBody(r.data), text: r.text, via: r.via };
+      }
+    }
     let res = await httpRequest(env, {
       method,
       url,
@@ -170,6 +190,27 @@ export function createOoredoo(env) {
   }
 
   async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
+    if (env.OOREDOO_RELAY_URL) {
+      const r = await httpRequest(env, {
+        method: 'POST',
+        url: `${base}${CHECKPOINT_PATH}`,
+        headers: {
+          ...commonHeaders({ sig, corr, ts, fp, msisdn, cookie }),
+          'Content-Type': 'application/json',
+          'x-path': path,
+          'x-method': method,
+        },
+        body: '{}',
+        relayKey: 'OOREDOO_RELAY_URL',
+        useDbProxy: false,
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (r && r.status) {
+        return r;
+      }
+    }
     let res = await httpRequest(env, {
       method: 'POST',
       url: `${base}${CHECKPOINT_PATH}`,
