@@ -19,7 +19,7 @@ import {
   getOoredooTimestamps,
 } from './users.js';
 import { checkAndSetCooldown, checkAndSetCooldownOne, setCooldown, clearCooldown, cooldownLeftMs } from './cooldowns.js';
-import { fastFloodGate, checkRateLimit, isDuplicatePayload } from './rateLimit.js';
+import { fastFloodGate, isDuplicatePayload } from './rateLimit.js';
 import { loadSession, saveSession, getMenuContext } from './session.js';
 import { matchKeywordIntent, buildFallbackOptions } from './keywords.js';
 import {
@@ -148,8 +148,6 @@ function createBot(env, ctx, platform = "fb") {
     if (!sender)
       return;
     const _t0 = Date.now();
-    if (!fastFloodGate(sender, rc))
-      return;
     const mid = ev?.message?.mid;
     if (mid) {
       const _tm = Date.now();
@@ -167,14 +165,8 @@ function createBot(env, ctx, platform = "fb") {
       const _tSd = Date.now() - _tS;
       if (_tSd > 100) console.log(`[perf-snap] daily reset took ${_tSd}ms`);
     }
-    const [session, rl] = await Promise.all([loadSession(env, sender), checkRateLimit(env, sender)]);
+    const session = await loadSession(env, sender);
     const t1 = Date.now();
-    const t2 = t1;
-    if (!rl.ok) {
-      await send(sender, { text: "⚠️ كثرة رسائلك حاليًا، يرجى الانتظار قليلًا ثم المحاولة مجددًا." }, session);
-      await saveSession(env, session);
-      return;
-    }
     if (ev.message) {
       if (ev.message.is_echo || ev.message.is_deleted || ev.message.is_unsupported) {
         await saveSession(env, session);
@@ -188,7 +180,7 @@ function createBot(env, ctx, platform = "fb") {
       let t6 = Date.now();
       await saveSession(env, session);
       let t7 = Date.now();
-      console.log(`[perf-bot] loadSession=${t1-_t0}ms rl=${t2-t1}ms handle=${t6-t5}ms save=${t7-t6}ms total=${t7-_t0}ms`);
+      console.log(`[perf-bot] loadSession=${t1-_t0}ms handle=${t6-t5}ms save=${t7-t6}ms total=${t7-_t0}ms`);
       return;
     } else if (ev.postback) {
       if (ev.postback.title || ev.postback.payload) {

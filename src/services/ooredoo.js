@@ -2,19 +2,17 @@
 //
 // ملاحظة: أوريدو متاح من عناوين Cloudflare مباشرة (مؤكَّد: checkpoint يعيد 202).
 // لذلك لا نعتبر 403 حجبًا — بل هو سلوك OTP الأصلي ("أُرسل الرمز وثُبّتت الجلسة").
-// نحتفظ فقط بكشف الحجب الشبكي الفعلي (أخطاء origin من Cloudflare 520-526 أو HTML)
-// مع كولدداون متصاعد لتجنب إعادة المحاولة المحجوبة، وندعم OOREDOO_RELAY_URL كاحتياط.
+// حُذفت كل كولدداونات الحجب الجغرافي/WAF و"كثرة المحاولات" — نجرب دائمًا ونمرّر
+// الاستجابة الأصلية، وندعم OOREDOO_RELAY_URL كاحتياط.
 import { httpRequest } from './http.js';
 import { xSignature, generateDeviceFingerprint, platformDataSignature } from './ooredooSign.js';
 import { sleep } from '../util.js';
-import { cooldownLeftMs, setCooldown, extendCooldown, bumpCounter, resetCounter } from '../cooldowns.js';
+import { cooldownLeftMs, setCooldown } from '../cooldowns.js';
 
 const CHECKPOINT_PATH = '/api/ooredoo-bff/checkpoint/token';
 const TOKEN_PATH = '/api/auth/realms/myooredoo/protocol/openid-connect/token';
 
-const GEO_MESSAGE = 'الخدمة غير متاحة حاليًا، يرجى المحاولة لاحقًا ⚠️';
 const OTP_PACE_MS = 2500; // تباعد بين طلبات OTP
-const WAF_MAX = 180000; // أقصى كولدداون عند حجب شبكي متكرر
 
 // ---------- تثبيت SID (نفس IP الخروج) بين إرسال/تحقق OTP ----------
 // أوريدو يقيّد الرمز بالـ IP الذي أرسله → نحفظ SID الإرسال في D1
@@ -106,32 +104,7 @@ export function createOoredoo(env) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-// ---------- كولدداونات الحجب ----------
-  // تم تعطيل oo:geo مؤقتًا لتجنب إغلاق الخدمة أمام أرقام أوريدو.
-  //الحماية الحقيقية هي WAF المتصاعد (يتطلب تكرار ≥2).
-  async function geoBlocked() {
-    return false;
-  }
-  async function markGeoBlock() {}
-  async function markGeoBlock() {
-    await extendCooldown(env, 'oo:geo', 90 * 1e3);
-  }
-  async function wafBlocked() {
-    return (await cooldownLeftMs(env, 'oo:waf')) > 0;
-  }
-  async function registerWafBlock() {
-    const c = await bumpCounter(env, 'oo:waf:count');
-    if (c >= 2) {
-      const ms = Math.min(WAF_MAX, 30000 * Math.pow(2, c - 2));
-      await extendCooldown(env, 'oo:waf', ms);
-      console.log(`[Ooredoo] حجب WAF متكرر (${c}) → كولدداون ${Math.round(ms / 1000)}s`);
-    }
-  }
-  async function resetWafCounter() {
-    await resetCounter(env, 'oo:waf:count');
-  }
-
-  // ---------- تباعد OTP ----------
+// ---------- تباعد OTP ----------
   async function withOtpPacing() {
     const left = await cooldownLeftMs(env, 'oo:otp:pace');
     if (left > 0) await sleep(left);
@@ -171,10 +144,7 @@ export function createOoredoo(env) {
       directFirst: true,
     });
     if (isBlocked(res)) {
-      await registerWafBlock();
-      await markGeoBlock();
-      console.log('[ooredoo] rawRequest blocked:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || (res.data && res.data.message) || '').slice(0, 160));
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true, detail: String(res.text || '').slice(0, 120) } };
+      console.log('[ooredoo] rawRequest: استجابة غير JSON:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || '').slice(0, 160));
     }
     return { statusCode: res.status || 500, data: parseBody(res.data), text: res.text, via: res.via };
   }
@@ -198,8 +168,7 @@ export function createOoredoo(env) {
       directFirst: true,
     });
     if (isBlocked(res)) {
-      await registerWafBlock();
-      await markGeoBlock();
+      console.log('[ooredoo] checkpoint: استجابة غير JSON, status=', res.status, 'via=', res.via, 'body=', String(res.text || '').slice(0, 160));
       return null;
     }
     return res;
@@ -236,17 +205,11 @@ export function createOoredoo(env) {
   }
 
   async function tokenFlow(msisdn, buildParams, sid) {
-    if ((await geoBlocked()).blocked) {
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
-    }
-    if (await wafBlocked()) {
-      return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
-    }
     await withOtpPacing();
     const n = await nonceHandshake(msisdn, TOKEN_PATH, 'POST', sid);
     if (!n) {
-      console.log('[ooredoo] tokenFlow: nonceHandshake فشل لـ', msisdn, '(قد يكون حجبنا أو شبكة)');
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+      console.log('[ooredoo] tokenFlow: فشل المصافحة لـ', msisdn, '(قد يكون حجب أو شبكة)');
+      return { statusCode: 500, data: { message: 'فشل الاتصال بخدمة أوريدو، حاول مجددًا.' } };
     }
     const res = await tokenRequest(msisdn, n, buildParams(), sid);
     if (res.statusCode >= 500 || /<html/i.test(String(res.data || ''))) {
@@ -271,8 +234,7 @@ export function createOoredoo(env) {
     if (res.statusCode === 200) {
       const data = res.data;
       if (typeof data === 'string' && /<html/i.test(data)) {
-        await registerWafBlock();
-        return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+        return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
       }
       if (data && data.access_token) return { statusCode: 200, data };
       return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
@@ -309,28 +271,14 @@ export function createOoredoo(env) {
   // ---------- الواجهات العامة للـ OTP ----------
   async function sendVerificationCode(phoneNumber) {
     const msisdn = toMsisdn(phoneNumber);
-    const res = await attemptOtpSend(msisdn);
-    if (res.statusCode === 200 && !(res.data && res.data.blocked)) await resetWafCounter();
-    return res;
+    return attemptOtpSend(msisdn);
   }
 
   async function verifyCode(phoneNumber, code) {
     const msisdn = toMsisdn(phoneNumber);
-    const numCooldown = await cooldownLeftMs(env, `oo:otp:num:${msisdn}`);
-    if (numCooldown > 0) {
-      return {
-        statusCode: 429,
-        data: { message: `كثرة المحاولات على هذا الرقم، أعد المحاولة بعد ${Math.max(1, Math.ceil(numCooldown / 1000))} ثانية` },
-      };
-    }
     const res = await doVerifyOtp(msisdn, code);
-    if (res.statusCode === 401 && !(res.data && res.data.blocked)) {
-      const c = await bumpCounter(env, `oo:otp:401:${msisdn}`);
-      if (c >= 3) await setCooldown(env, `oo:otp:num:${msisdn}`, 30000);
-    } else if (res.statusCode === 200 && res.data && res.data.access_token) {
-      await resetCounter(env, `oo:otp:401:${msisdn}`);
-      await resetCounter(env, `oo:otp:num:${msisdn}`);
-      await resetWafCounter();
+    if (res.statusCode === 401) {
+      return { statusCode: 401, data: { message: 'الرمز غير صحيح أو انتهت صلاحيته.' } };
     }
     return res;
   }
@@ -365,17 +313,11 @@ export function createOoredoo(env) {
   }
 
   async function bffRequest(method, path, token, msisdn, opts) {
-    if ((await geoBlocked()).blocked) {
-      return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
-    }
-    if (await wafBlocked()) {
-      return { statusCode: 429, data: { message: 'كثرة المحاولات، أعد المحاولة لاحقًا.', blocked: true } };
-    }
     // IP الخروج يجب أن يطابق IP إصدار التوكن وإلا رفضت أوريدو (401).
     // نستخدم نفس الـ sid المثبّت أثناء التحقق (أو جديد) لكلا طلبي checkpoint+BFF.
     const sid = (await getPinnedSid(env.DB, msisdn)) || freshFlowSid();
     const n = await nonceHandshake(msisdn, path, method, sid);
-    if (!n) return { statusCode: 403, data: { message: GEO_MESSAGE, blocked: true } };
+    if (!n) return { statusCode: 500, data: { message: 'فشل الاتصال بخدمة أوريدو، حاول مجددًا.' } };
     const { body, extraHeaders } = opts || {};
     const headers = await authHeaders(token, msisdn, n, {
       'x-msisdn': msisdn,
@@ -420,6 +362,5 @@ export function createOoredoo(env) {
     purchaseByop,
     BYOP_CODES,
     BYOP_LIMITED_CODES,
-    markGeoBlock,
   };
 }

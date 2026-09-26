@@ -168,11 +168,6 @@ async function handleUpdate(body, env, ctx) {
     // البوت ينشئ messenger تلغرام المناسب داخليًا (لا حاجة لأي ربط يدوي)
     const bot = createBot(env, ctx, 'tg');
 
-    // بوابة الفيض (نفس منطق فيسبوك)
-    if (!bot.floodGate({ object: 'page', entry: [{ messaging: [ev] }] })) {
-      return;
-    }
-
     // المعالجة الكاملة (قد تستغرق وقتًا، لكننا ردّدنا على تلغرام مسبقًا)
     await bot.process({ object: 'page', entry: [{ messaging: [ev] }] });
 

@@ -60,10 +60,6 @@ async function handleWebhookEvent(body, env, ctx) {
 
         const bot = createBot(env, ctx, 'ig');
 
-        if (!bot.floodGate({ object: 'page', entry: [{ messaging: [botEvent] }] })) {
-          continue;
-        }
-
         ctx.waitUntil(bot.process({ object: 'page', entry: [{ messaging: [botEvent] }] }));
       }
     }

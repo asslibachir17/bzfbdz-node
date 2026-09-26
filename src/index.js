@@ -321,13 +321,6 @@ export default {
       // البوت ينشئ messenger فيسبوك المناسب داخليًا (لا حاجة لأي ربط يدوي)
       const bot = createBot(env, ctx, 'fb');
 
-      // بوابة الفيض (في الذاكرة، تكلفة صفر): ترفض الانفجارات/الدوبليكات فورًا
-      // قبل أي عمل — هكذا لا يستهلك السبام ليس طلبات خارجية ولا D1.
-      if (!bot.floodGate(body)) {
-        console.log('[webhook] floodGate blocked (no msgs)');
-        return new Response('EVENT_RECEIVED', { status: 200 });
-      }
-
       // قرأة فورية: نُعلِم فيسبوك بأن المستخدم "شوهد" فورًا بدون انتظار DB أو الطابور،
       // فلا يبقى السؤال "غير مقروء" فترة طويلة أثناء المعالجة/الانتظار.
       const seenTargets = new Set();
