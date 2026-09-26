@@ -316,11 +316,7 @@ function createBot(env, ctx, platform = "fb") {
     } else if (apiResponse.data?.blocked) {
       await send(sender, { text: apiResponse.data.message || "الخدمة غير متاحة حاليًا." }, sess);
     } else if (apiResponse.statusCode === 400) {
-      if (operator === "ooredoo") {
-        await send(sender, { text: "شريحتك قديمة حولها لـ NYOOZ او DIMA وحاول مجددا" }, sess);
-      } else {
-        await send(sender, { text: "❌ حدث خطأ، يرجى المحاولة لاحقًا." }, sess);
-      }
+      await send(sender, { text: "❌ حدث خطأ في الطلب، يرجى المحاولة لاحقًا." }, sess);
     } else if (apiResponse.statusCode === 429 && apiResponse.data?.message) {
       await send(sender, { text: apiResponse.data.message }, sess);
     } else if (apiResponse.statusCode === 401 || /invalid user credentials/i.test(JSON.stringify(apiResponse.data || {}))) {
@@ -330,11 +326,7 @@ function createBot(env, ctx, platform = "fb") {
         await send(sender, { text: "رقم غير صحيح او غير موجود رجاء تحقق من رقم واعادة محاولة ❌" }, sess);
       }
     } else if (apiResponse.statusCode !== 500 && apiResponse.statusCode !== 0) {
-      if (operator === "ooredoo") {
-        await send(sender, { text: "شريحتك قديمة حولها لـ NYOOZ او DIMA وحاول مجددا" }, sess);
-      } else {
-        await send(sender, { text: "❌ حدث خطأ، يرجى المحاولة لاحقًا." }, sess);
-      }
+      await send(sender, { text: "❌ حدث خطأ، يرجى المحاولة لاحقًا." }, sess);
     } else {
       await send(sender, { text: "⚠️ فشل إرسال الرمز، يرجى المحاولة لاحقًا." }, sess);
     }
