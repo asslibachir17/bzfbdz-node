@@ -1488,11 +1488,14 @@ ${msg}` : ""}`,
       }))
     ];
     const lines = [`📱 رقم الهاتف: ${maskOoredooPhone(inputPhone)}`, "", "🗳 اختر الخدمة التي تريدها"];
+    const pubReplies = [...byopButtons, ...backQR(inputPhone, operator)];
+    const numberedOffers = numberedServiceLines(pubReplies);
+    const offersText = numberedOffers ? `${lines.join("\n")}\n\n${numberedOffers}` : lines.join("\n");
     await send(
       sender,
       {
-        text: lines.join("\n"),
-        quick_replies: [...byopButtons, ...backQR(inputPhone, operator)]
+        text: offersText,
+        quick_replies: pubReplies
       },
       session
     );
