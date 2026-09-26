@@ -84,7 +84,7 @@ export async function httpRequest(env, opts) {
   }
 
   if (relays?.length) {
-    return relayRequest(env, relays, { method, url, headers: hdrs, body: payload }, timeoutMs);
+    return relayRequest(env, relays, { method, url, headers: hdrs, body: payload, sid }, timeoutMs);
   }
   // المحاولة الأخيرة: fetch مباشر مع إعادة محاولة واحدة سريعة على أخطاء الشبكة المؤقتة
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -116,6 +116,7 @@ export async function httpRequest(env, opts) {
 // عناوين خروج مختلفة، ويستمر في تجربة التالي عند رفض أوريدو (Request Rejected).
 let relayCursor = 0;
 let rejectedCursor = new Map(); // relayUrl -> expiry (ms) لتجميد الـ relay المرفوض مؤقتاً
+const sidRelay = new Map(); // sid -> relayUrl: تثبيت مصدر الخروج لكل تدفق (checkpoint+token من نفس IP)
 
 function relayList(primary, extra) {
   const all = [];
@@ -150,10 +151,26 @@ function isOoredooRejected(data) {
 }
 
 async function relayRequest(env, relays, spec, timeoutMs) {
-  const { relay: first, all } = nextRelay(relays);
+  const sid = spec && spec.sid;
+  let first;
+  // التدفق الواحد (checkpoint→token) يجب أن يمر عبر نفس الـ relay/IP من أجل
+  // الـ nonce الذي يثبّته checkpoint — حتى لا تقلب أوريدو التدفق المنقسم.
+  if (sid && sidRelay.has(sid) && relays.includes(sidRelay.get(sid))) {
+    first = sidRelay.get(sid);
+    if (!rejectedCursor.get(first) || rejectedCursor.get(first) <= Date.now()) {
+      relayCursor = relays.indexOf(first);
+    } else {
+      first = null;
+    }
+  }
+  if (!first) {
+    const n = nextRelay(relays);
+    first = n.relay;
+    if (sid) sidRelay.set(sid, first);
+  }
   let tried = [];
   // نجرب حتى عدد الـ relays؛ بعد التجميد يعيد أول relay إذا كان الكل مرفوضاً
-  const attempts = all ? Math.max(1, relays.length) : relays.length;
+  const attempts = relays.length;
   for (let i = 0; i < attempts; i++) {
     const { relay: r } = i === 0 ? { relay: first } : nextRelay(relays);
     if (tried.includes(r)) continue;
@@ -180,6 +197,7 @@ async function relayRequest(env, relays, spec, timeoutMs) {
         if (status === 200 && isOoredooRejected(payload.data)) {
           console.log(`[http] relay ${r.split('/')[2]} rejected by ooredoo → try next`);
           markRejected(r);
+          if (sid && sidRelay.get(sid) === r) sidRelay.delete(sid);
           await sleep(150);
           continue;
         }

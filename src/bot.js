@@ -319,6 +319,8 @@ function createBot(env, ctx, platform = "fb") {
       await send(sender, { text: "❌ حدث خطأ في الطلب، يرجى المحاولة لاحقًا." }, sess);
     } else if (apiResponse.statusCode === 429 && apiResponse.data?.message) {
       await send(sender, { text: apiResponse.data.message }, sess);
+    } else if (apiResponse.statusCode === 503 && apiResponse.data?.message) {
+      await send(sender, { text: apiResponse.data.message }, sess);
     } else if (apiResponse.statusCode === 401 || /invalid user credentials/i.test(JSON.stringify(apiResponse.data || {}))) {
       if (operator === "ooredoo") {
         await send(sender, { text: "⚠️ الضغط على شبكة أوريدو الآن.\nأعد المحاولة بعد بضع دقائق." }, sess);
