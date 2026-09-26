@@ -41,7 +41,7 @@ export async function httpRequest(env, opts) {
     directFirst = false, // جرّب الاتصال المباشر أولاً (أسرع)، والبروكسي احتياط عند الفشل
   } = opts;
 
-  const relay = relayKey ? env[relayKey] : null;
+  const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST']) : null;
 
   let payload = body;
   const hdrs = { ...headers };
@@ -83,8 +83,8 @@ export async function httpRequest(env, opts) {
     }
   }
 
-  if (relay) {
-    return relayRequest(env, relay, { method, url, headers: hdrs, body: payload }, timeoutMs);
+  if (relays?.length) {
+    return relayRequest(env, relays, { method, url, headers: hdrs, body: payload }, timeoutMs);
   }
   // المحاولة الأخيرة: fetch مباشر مع إعادة محاولة واحدة سريعة على أخطاء الشبكة المؤقتة
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -112,40 +112,96 @@ export async function httpRequest(env, opts) {
   return { status: 0, data: undefined, headers: null, error: 'fetch exhausted' };
 }
 
-async function relayRequest(env, relayUrl, spec, timeoutMs) {
-  const { ctrl, clear } = timeoutSignal(timeoutMs + 10000);
-  try {
-    const res = await fetch(relayUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-relay-secret': env.RELAY_SECRET || '',
-      },
-      body: JSON.stringify(spec),
-      signal: ctrl.signal,
-    });
-    const text = await res.text();
-    let payload = parseText(text);
-    if (payload && payload.error) {
-      return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
-    }
-    if (payload && typeof payload === 'object' && 'status' in payload) {
-      // عقد Relay: { status, headers?, data? } — headers يُعاد ككائن عادي،
-      // نعيد بناء Headers حقيقي حتى تعمل headers.get('set-cookie') / getSetCookie
-      return {
-        status: Number(payload.status) || res.status,
-        data: payload.data,
-        headers: toHeaders(payload.headers),
-        text: typeof payload.data === 'string' ? payload.data : text,
-        via: 'relay',
-      };
-    }
-    return { status: res.status, data: payload, headers: res.headers, text, via: 'relay' };
-  } catch (e) {
-    return { status: 0, data: undefined, headers: null, error: e.message || 'relay error', via: 'relay' };
-  } finally {
-    clear();
+// فهرس تدواري (round-robin) للـ relays — يتبدل كل طلب لتوزيع الحمولة على
+// عناوين خروج مختلفة، ويستمر في تجربة التالي عند رفض أوريدو (Request Rejected).
+let relayCursor = 0;
+let rejectedCursor = new Map(); // relayUrl -> expiry (ms) لتجميد الـ relay المرفوض مؤقتاً
+
+function relayList(primary, extra) {
+  const all = [];
+  if (primary) all.push(primary);
+  if (extra) for (const s of String(extra).split(',')) {
+    const v = s.trim();
+    if (v) all.push(v);
   }
+  return all;
+}
+
+function nextRelay(relays) {
+  const now = Date.now();
+  for (let i = 0; i < relays.length; i++) {
+    relayCursor = (relayCursor + 1) % relays.length;
+    const u = relays[relayCursor];
+    const cooldown = rejectedCursor.get(u);
+    if (!cooldown || cooldown <= now) return { relay: u, all: false };
+  }
+  // الكل مرفوض حالياً → نعيد الأول (سيجرب من جديد بعد انتهاء تهدئة)
+  rejectedCursor.clear();
+  return { relay: relays[0], all: true };
+}
+
+function markRejected(relayUrl) {
+  rejectedCursor.set(relayUrl, Date.now() + 10000); // تجميد 10 ثانية
+}
+
+function isOoredooRejected(data) {
+  if (!data || typeof data !== 'string') return false;
+  return /Request Rejected/i.test(data) && /<html/i.test(data);
+}
+
+async function relayRequest(env, relays, spec, timeoutMs) {
+  const { relay: first, all } = nextRelay(relays);
+  let tried = [];
+  // نجرب حتى عدد الـ relays؛ بعد التجميد يعيد أول relay إذا كان الكل مرفوضاً
+  const attempts = all ? Math.max(1, relays.length) : relays.length;
+  for (let i = 0; i < attempts; i++) {
+    const { relay: r } = i === 0 ? { relay: first } : nextRelay(relays);
+    if (tried.includes(r)) continue;
+    tried.push(r);
+    const { ctrl, clear } = timeoutSignal(timeoutMs + 10000);
+    try {
+      const res = await fetch(r, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-relay-secret': env.RELAY_SECRET || '',
+        },
+        body: JSON.stringify(spec),
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let payload = parseText(text);
+      if (payload && payload.error) {
+        return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
+      }
+      if (payload && typeof payload === 'object' && 'status' in payload) {
+        const status = Number(payload.status) || res.status;
+        // أوريدو ترفض أحياناً الـ IP المزدحم بـ HTML «Request Rejected» (حماية ضد التردد)
+        if (status === 200 && isOoredooRejected(payload.data)) {
+          console.log(`[http] relay ${r.split('/')[2]} rejected by ooredoo → try next`);
+          markRejected(r);
+          await sleep(150);
+          continue;
+        }
+        return {
+          status,
+          data: payload.data,
+          headers: toHeaders(payload.headers),
+          text: typeof payload.data === 'string' ? payload.data : text,
+          via: 'relay',
+        };
+      }
+      return { status: res.status, data: payload, headers: res.headers, text, via: 'relay' };
+    } catch (e) {
+      markRejected(r);
+      console.log(`[http] relay ${r.split('/')[2]} error: ${e.message || e} → try next`);
+      await sleep(150);
+      continue;
+    } finally {
+      clear();
+    }
+  }
+  return { status: 0, data: undefined, headers: null, error: 'all relays rejected: ' + tried.join(', '), via: 'relay' };
 }
 
 function toHeaders(obj) {
