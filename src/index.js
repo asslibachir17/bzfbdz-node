@@ -5,6 +5,19 @@ import { createOoredoo } from './services/ooredoo.js';
 import { createMessenger } from './messenger.js';
 import { getLoadGuard } from './loadGuard.js';
 
+// مخزن السجلات الأخيرة في الذاكرة (يُقرأ عبر /debuglogs عند الحاجة)
+const ringLog = [];
+function ring(...args) {
+  try {
+    const line = new Date().toISOString() + ' ' + args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    ringLog.push(line);
+    if (ringLog.length > 300) ringLog.splice(0, ringLog.length - 300);
+  } catch {}
+}
+const origConsole = { log: console.log.bind(console), error: console.error.bind(console) };
+console.log = (...args) => { try { ring(...args); } catch {} origConsole.log(...args); };
+console.error = (...args) => { try { ring('[ERR]', ...args); } catch {} origConsole.error(...args); };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -207,6 +220,16 @@ export default {
         deployedAt: new Date().toISOString(),
       };
       return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ---------- آخر السجلات (مخزن في الذاكرة) للتمييز بين حجب/خطأ ----------
+    if (request.method === 'GET' && url.pathname === '/debuglogs') {
+      const key = request.headers.get('x-diag-key') || url.searchParams.get('key');
+      if (!env.DIAG_KEY || key !== env.DIAG_KEY) return new Response('Forbidden', { status: 403 });
+      return new Response(JSON.stringify({ lines: ringLog.slice(-80) }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

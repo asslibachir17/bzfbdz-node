@@ -271,6 +271,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
       const pUrl = proxyUrl(proxy, sid);
 
       const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
+      console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
       if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0,80)}`);
 
       if (!r.status) {
