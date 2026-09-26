@@ -288,6 +288,47 @@ export default {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    // ---------- اختبار بروكسيات DB لأوريدو مباشرة (بدون relay) ----------
+    // يذهب من الخادم إلى بروكسي DB (ooredoo) ثم إلى apis.ooredoo.dz
+    // ويرجع الرد الخام — لنرى هل البروكسي يصل فعلاً لأوريدو (عنوان DZ) أم ميت.
+    if (request.method === 'GET' && url.pathname === '/_diag/dbproxy-check') {
+      const key = request.headers.get('x-diag-key') || url.searchParams.get('key');
+      if (!env.DIAG_KEY || key !== env.DIAG_KEY) return new Response('Forbidden', { status: 403 });
+      const { httpRequest } = await import('./services/http.js');
+      const { default: proxyRequest } = await import('./services/proxy.js');
+      const probeUrl = 'https://apis.ooredoo.dz/my_ooredoo/rest/v1/users/self';
+      let out = { mode: 'httpRequest-ooredoo' };
+      try {
+        const r = await httpRequest(env, {
+          method: 'GET',
+          url: probeUrl,
+          headers: { 'User-Agent': 'Dart/3.4 (dart:io)', Accept: '*/*' },
+          relayKey: 'OOREDOO_RELAY_URL',
+          useDbProxy: true,
+          proxyService: 'ooredoo',
+          timeoutMs: 45000,
+          directFirst: false,
+        });
+        out.status = r.status;
+        out.via = r.via;
+        out.error = r.error || null;
+        out.text = String(r.text || (r.data && typeof r.data === 'string' && r.data) || '').slice(0, 300);
+      } catch (e) {
+        out.error = 'httpRequest threw: ' + (e && e.message || e);
+      }
+      let out2 = { mode: 'proxyRequest-ooredoo' };
+      try {
+        const r2 = await proxyRequest(env, { method: 'GET', url: probeUrl, headers: { 'User-Agent': 'Dart/3.4 (dart:io)', Accept: '*/*' }, service: 'ooredoo' }, 45000);
+        out2.status = r2.status;
+        out2.via = r2.via;
+        out2.error = r2.error || null;
+        out2.text = String(r2.text || '').slice(0, 300);
+      } catch (e) {
+        out2.error = 'proxyRequest threw: ' + (e && e.message || e);
+      }
+      return new Response(JSON.stringify({ direct: out, proxy2: out2 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // ---------- إحصائيات نظام الضغط (محمي بـ DIAG_KEY) ----------
     if (request.method === 'GET' && url.pathname === '/_diag/load') {
       const key = request.headers.get('x-diag-key') || url.searchParams.get('key');

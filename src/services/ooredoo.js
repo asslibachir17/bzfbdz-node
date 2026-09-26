@@ -131,6 +131,23 @@ export function createOoredoo(env) {
   }
 
   async function rawRequest(method, url, headers, body, sid) {
+    // إجبار بروكسي DB (تجريبي): تجاهل الـ relay كلياً والذهاب للبروكسي مباشرة.
+    if (env.OOREDOO_FORCE_DBPROXY) {
+      const r = await httpRequest(env, {
+        method,
+        url,
+        headers,
+        body,
+        relayKey: null,
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      console.log('[ooredoo] rawRequest FORCE_DBPROXY:', method, url.split('/').pop(), 'status=', r.status, 'via=', r.via, 'text=', String(r.text || '').slice(0, 120));
+      return { statusCode: r.status || 500, data: parseBody(r.data), text: r.text, via: r.via };
+    }
     // إذا ضُبط OOREDOO_RELAY_URL (وركر oo-relay يخرج من Cloudflare IP غير محجوب)
     // فهو الطريق المعتمد لأوريدو: بدون direct (والذي على Render يعود HTML حجب) ولا
     // بروكسيات معطوبة — نمرر الطلب عبر الوركر (أو مجموعة الوركرات) مباشرةً.
@@ -149,6 +166,25 @@ export function createOoredoo(env) {
       if (r && r.status) {
         console.log('[ooredoo] rawRequest via relay:', method, url.split('/').pop(), 'status=', r.status, 'via=', r.via);
         return { statusCode: r.status || 500, data: parseBody(r.data), text: r.text, via: r.via };
+      }
+      // كل الـ relays مرفوضة (غالباً إشباع عناوين Cloudflare من نفس PoP الأميركي).
+      // نجرب بروكسي DB الجزائري الذي يصل فعلاً لأوريدو بعنوان DZ متنوع (يُثبّت بـ sid).
+      console.log('[ooredoo] rawRequest: كل relays مرفوضة → محاولة بروكسي DB (DZ)');
+      const fb = await httpRequest(env, {
+        method,
+        url,
+        headers,
+        body,
+        relayKey: null,
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (fb && fb.status) {
+        console.log('[ooredoo] rawRequest عبر البروكسي بعد الـ relays: status=', fb.status, 'via=', fb.via);
+        return { statusCode: fb.status || 500, data: parseBody(fb.data), text: fb.text, via: fb.via || 'db-proxy' };
       }
       console.log('[ooredoo] rawRequest: كل relays مرفوضة → نعود بخطأ واضح بدل بروكسي معطوب');
       return { statusCode: 503, data: { message: 'خدمة أوريدو مشغولة الآن، أعد المحاولة بعد دقائق.' } };
@@ -192,6 +228,28 @@ export function createOoredoo(env) {
   }
 
   async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
+    if (env.OOREDOO_FORCE_DBPROXY) {
+      const r = await httpRequest(env, {
+        method: 'POST',
+        url: `${base}${CHECKPOINT_PATH}`,
+        headers: {
+          ...commonHeaders({ sig, corr, ts, fp, msisdn, cookie }),
+          'Content-Type': 'application/json',
+          'x-path': path,
+          'x-method': method,
+        },
+        body: '{}',
+        relayKey: null,
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      console.log('[ooredoo] checkpoint FORCE_DBPROXY: status=', r.status, 'via=', r.via);
+      if (r && r.status) return r;
+      return null;
+    }
     if (env.OOREDOO_RELAY_URL) {
       const r = await httpRequest(env, {
         method: 'POST',
@@ -211,6 +269,30 @@ export function createOoredoo(env) {
       });
       if (r && r.status) {
         return r;
+      }
+      // كل الـ relays مرفوضة → بروكسي DB الجزائري كاحتياط (نفس التثبيت sid) — 
+      // checkpoint أُثبت أنه يعمل عبره (202).
+      console.log('[ooredoo] checkpoint: كل relays مرفوضة → بروكسي DB');
+      const fb = await httpRequest(env, {
+        method: 'POST',
+        url: `${base}${CHECKPOINT_PATH}`,
+        headers: {
+          ...commonHeaders({ sig, corr, ts, fp, msisdn, cookie }),
+          'Content-Type': 'application/json',
+          'x-path': path,
+          'x-method': method,
+        },
+        body: '{}',
+        relayKey: null,
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (fb && fb.status) {
+        console.log('[ooredoo] checkpoint عبر البروكسي بعد الـ relays: status=', fb.status, 'via=', fb.via);
+        return fb;
       }
       console.log('[ooredoo] checkpoint: كل relays مرفوضة');
       return null;
