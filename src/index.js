@@ -154,6 +154,9 @@ export default {
             blocked: pk.data?.blocked,
           },
         };
+      } else if (target === 'ooredoo-verify') {
+        // تحقق من رمز OTP — نجاح = 200 مع access_token (عكس إرسال الرمز الذي يكون 403)
+        res = await createOoredoo(env).verifyCode(phone, String(body.code || ''));
       } else if (target === 'djezzy-v2') {
         // نفس ما يستخدمه البوت حالياً: sendVerificationCodeV2 (mobile-api/oauth2/registration, UA 3.0.7)
         res = await createDjezzy(env).sendVerificationCodeV2(phone);
@@ -207,6 +210,35 @@ export default {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // ---------- فحص الـ relays من داخل الخادم (عام: يكشف القائمة الفعلية + حالة كل relay) ----------
+    if (request.method === 'GET' && url.pathname === '/relay-check') {
+      const primary = env.OOREDOO_RELAY_URL || '';
+      const rawList = env.OOREDOO_RELAY_URL_LIST || '';
+      const list = rawList.split(',').map((s) => s.trim()).filter(Boolean);
+      const entries = [];
+      for (const u of [primary, ...list]) {
+        if (!u) continue;
+        let out = { url: u, ok: false };
+        try {
+          const r = await fetch(u + '/ip', { signal: AbortSignal.timeout(20000) });
+          const j = await r.json().catch(() => null);
+          out = { url: u, ok: r.ok, status: r.status, asn: (j && j.asn) || null };
+        } catch (e) {
+          out = { url: u, ok: false, error: (e && e.message) || String(e) };
+        }
+        entries.push(out);
+      }
+      return new Response(JSON.stringify({
+        relaySecretSet: !!env.RELAY_SECRET,
+        primary,
+        rawList,
+        list,
+        count: entries.length,
+        entries,
+        db: env.DB?.backend || 'none',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
     // ---------- إحصائيات نظام الضغط (محمي بـ DIAG_KEY) ----------
