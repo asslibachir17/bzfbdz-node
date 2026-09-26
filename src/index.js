@@ -241,6 +241,53 @@ export default {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    // ---------- إرسال OTP تشخيصي عبر نفس مسار البوت من داخل الخادم (DIAG_KEY) ----------
+    // يرجع أين خرج الطلب فعلياً + ما رده أوريدو — للتمييز بين «حظر IP» و«رقم محجوب».
+    if (request.method === 'POST' && url.pathname === '/_diag/relay-otp') {
+      if (!env.DIAG_KEY || request.headers.get('x-diag-key') !== env.DIAG_KEY) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      const body = await request.json().catch(() => ({}));
+      const phone = String(body.phone || '0550000000');
+      const primary = env.OOREDOO_RELAY_URL || '';
+      const list = (env.OOREDOO_RELAY_URL_LIST || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const relayEntries = [];
+      for (const u of [primary, ...list]) {
+        if (!u) continue;
+        let out = { url: u, ok: false };
+        try {
+          const r = await fetch(u + '/ip', { signal: AbortSignal.timeout(20000) });
+          const j = await r.json().catch(() => null);
+          out = { url: u, ok: r.ok, status: r.status, asn: (j && j.asn) || null };
+        } catch (e) {
+          out = { url: u, ok: false, error: (e && e.message) || String(e) };
+        }
+        relayEntries.push(out);
+      }
+      const t0 = Date.now();
+      let res;
+      try {
+        res = await createOoredoo(env).sendVerificationCode(phone);
+      } catch (e) {
+        res = { statusCode: 500, data: { message: 'exception: ' + (e && e.message || e) } };
+      }
+      const ua = Math.round(Date.now() - t0);
+      const resData = res && res.data && typeof res.data === 'object'
+        ? { message: res.data.message || null, blocked: res.data.blocked || null, keys: Object.keys(res.data).slice(0, 12) }
+        : { raw: String(res && res.data).slice(0, 250) };
+      return new Response(JSON.stringify({
+        phone,
+        ok: res && res.statusCode === 200,
+        statusCode: res && res.statusCode,
+        via: res && res.via,
+        text: String(res && (res.text || (res.data && res.data.message) || '')).slice(0, 300),
+        data: resData,
+        elapsedMs: ua,
+        relayCount: relayEntries.length,
+        relayEntries,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // ---------- إحصائيات نظام الضغط (محمي بـ DIAG_KEY) ----------
     if (request.method === 'GET' && url.pathname === '/_diag/load') {
       const key = request.headers.get('x-diag-key') || url.searchParams.get('key');
