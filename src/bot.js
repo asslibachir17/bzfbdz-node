@@ -62,6 +62,18 @@ function cancelInviteQR(phone, op) {
 function cancelVerifyQR() {
   return [{ content_type: 'text', title: '❌ إلغاء العملية', payload: 'CANCEL_VERIFICATION' }];
 }
+// أسطر مرقمة من أزرار الخدمات (تُضاف لنص الرسالة لأن أزرار quick_replies لا تظهر في فيسبوك لايت)
+function numberedServiceLines(quickReplies) {
+  if (!quickReplies || !quickReplies.length) return '';
+  const lines = [];
+  let n = 1;
+  for (const q of quickReplies) {
+    if (!q || /^back:/i.test(String(q.payload || ''))) continue;
+    lines.push(`${n}- ${q.title}`);
+    n++;
+  }
+  return lines.length ? lines.join('\n') : '';
+}
 
 // ترويج بوت فيسبوك لمستخدمي تلغرام فقط (لا تأثير على فيسبوك نفسه)
 const FB_PAGE_LINK = 'https://www.facebook.com/BZeroBot';
@@ -233,6 +245,17 @@ function createBot(env, ctx, platform = "fb") {
     const menu = getMenuContext(session, MENU_CONTEXT_TTL);
     if (menu && menu.quick_replies.length) {
       const options = menu.quick_replies.map((q) => ({ title: q.title, payload: q.payload }));
+      // اختيار رقمي: يكتب المستخدم رقم الخدمة (1..9) فيتطابق مع الترتيب المرقّم المعروض
+      const numMatch = /^([1-9])$/.exec(messageText.trim());
+      if (numMatch) {
+        const ordered = options.filter((o) => !/^back:/i.test(o.payload));
+        const target = ordered[Number(numMatch[1]) - 1];
+        if (target) {
+          session.menu_ctx = null;
+          await handlePostback(sender, { payload: target.payload }, session);
+          return;
+        }
+      }
       const local = matchKeywordIntent(messageText, options);
       if (local) {
         session.menu_ctx = null;
@@ -1548,7 +1571,9 @@ ${msg}` : ""}`,
     session.phone = inputPhone;
     session.operator = operator;
     session.stage = "verified";
-    await send(sender, { text, quick_replies: quickReplies }, session);
+    const numbered = numberedServiceLines(quickReplies);
+    const finalText = numbered ? `${text}\n\n${numbered}` : text;
+    await send(sender, { text: finalText, quick_replies: quickReplies }, session);
   }
   const OOREDOO_PLAN_NAMES = { "736": "N'YOOZ", "682": "682", "654": "654", "DIMAN": "DIMA", "DIMA": "DIMA" };
   function resolveOoredooPlanName(ratePlan) {
@@ -2008,11 +2033,12 @@ ${lines.join("\n").trim()}`;
       payload: `obyopcode:${phoneNumber}:${operator}:${code}`
     }));
     quick_replies.push(...backQR(phoneNumber, operator));
+    const numbered = numberedServiceLines(quick_replies);
     return {
       text: `💰 عروض BYOP المخصصة (${OOREDOO_BYOP_PRICE})
 اختر التطبيق الذي تريد تفعيله:
 
-⚠️ هذه الخدمة مدفوعة وتُخصم من رصيدك.`,
+⚠️ هذه الخدمة مدفوعة وتُخصم من رصيدك.${numbered ? `\n\n${numbered}` : ''}`,
       quick_replies
     };
   }
