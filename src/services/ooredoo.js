@@ -133,7 +133,7 @@ export function createOoredoo(env) {
   async function rawRequest(method, url, headers, body, sid) {
     // إذا ضُبط OOREDOO_RELAY_URL (وركر oo-relay يخرج من Cloudflare IP غير محجوب)
     // فهو الطريق المعتمد لأوريدو: بدون direct (والذي على Render يعود HTML حجب) ولا
-    // بروكسيات معطوبة — نمرر الطلب عبر الوركر مباشرةً.
+    // بروكسيات معطوبة — نمرر الطلب عبر الوركر (أو مجموعة الوركرات) مباشرةً.
     if (env.OOREDOO_RELAY_URL) {
       const r = await httpRequest(env, {
         method,
@@ -150,6 +150,8 @@ export function createOoredoo(env) {
         console.log('[ooredoo] rawRequest via relay:', method, url.split('/').pop(), 'status=', r.status, 'via=', r.via);
         return { statusCode: r.status || 500, data: parseBody(r.data), text: r.text, via: r.via };
       }
+      console.log('[ooredoo] rawRequest: كل relays مرفوضة → نعود بخطأ واضح بدل بروكسي معطوب');
+      return { statusCode: 503, data: { message: 'خدمة أوريدو مشغولة الآن، أعد المحاولة بعد دقائق.' } };
     }
     let res = await httpRequest(env, {
       method,
@@ -210,6 +212,8 @@ export function createOoredoo(env) {
       if (r && r.status) {
         return r;
       }
+      console.log('[ooredoo] checkpoint: كل relays مرفوضة');
+      return null;
     }
     let res = await httpRequest(env, {
       method: 'POST',
