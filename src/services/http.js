@@ -142,7 +142,9 @@ function nextRelay(relays) {
 }
 
 function markRejected(relayUrl) {
-  rejectedCursor.set(relayUrl, Date.now() + 10000); // تجميد 10 ثانية
+  // تجميد أطول (60 ثانية) لأن عنوان الخروج الواحد يعاني «صومعة التردد»
+  // من أوريدو بعد رفض حقيقي، والانتقال الفوري يزيد الضغط على العنوان التالي.
+  rejectedCursor.set(relayUrl, Date.now() + 60000);
 }
 
 function isOoredooRejected(data) {
@@ -169,6 +171,7 @@ async function relayRequest(env, relays, spec, timeoutMs) {
     if (sid) sidRelay.set(sid, first);
   }
   let tried = [];
+  let hasResult = false;
   // نجرب حتى عدد الـ relays؛ بعد التجميد يعيد أول relay إذا كان الكل مرفوضاً
   const attempts = relays.length;
   for (let i = 0; i < attempts; i++) {
@@ -187,6 +190,7 @@ async function relayRequest(env, relays, spec, timeoutMs) {
         signal: ctrl.signal,
       });
       const text = await res.text();
+      hasResult = true;
       let payload = parseText(text);
       if (payload && payload.error) {
         return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
@@ -217,6 +221,39 @@ async function relayRequest(env, relays, spec, timeoutMs) {
       continue;
     } finally {
       clear();
+    }
+  }
+  // فشلت كل الـ relays في هذه الجولة (status 0): قد يكون كلها تحت تهدئة لحظية
+  // من أوريدو بعد ضغط متواصل. نمنح ثانيتين ثم نعيد الجولة مرة واحدة — أوريدو
+  // يتعافى أحياناً بعد ثوانٍ (رفض تردد قصير).
+  if (tried.length && !hasResult) {
+    await sleep(2000);
+    const n = nextRelay(relays);
+    const r2 = n.relay;
+    console.log(`[http] retry round after cooldown → ${r2.split('/')[2]}`);
+    try {
+      const res = await fetch(r2, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-relay-secret': env.RELAY_SECRET || '' },
+        body: JSON.stringify(spec),
+        signal: timeoutSignal(timeoutMs + 10000).ctrl.signal,
+      });
+      const text = await res.text();
+      const payload = parseText(text);
+      if (payload && !payload.error && typeof payload === 'object' && 'status' in payload) {
+        return {
+          status: Number(payload.status) || res.status,
+          data: payload.data,
+          headers: toHeaders(payload.headers),
+          text: typeof payload.data === 'string' ? payload.data : text,
+          via: 'relay',
+        };
+      }
+      if (payload && payload.error) {
+        return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
+      }
+    } catch (e) {
+      console.log(`[http] retry relay ${r2.split('/')[2]} error: ${e.message || e}`);
     }
   }
   return { status: 0, data: undefined, headers: null, error: 'all relays rejected: ' + tried.join(', '), via: 'relay' };
