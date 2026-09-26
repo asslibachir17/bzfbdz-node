@@ -131,7 +131,7 @@ export function createOoredoo(env) {
   }
 
   async function rawRequest(method, url, headers, body, sid) {
-    const res = await httpRequest(env, {
+    let res = await httpRequest(env, {
       method,
       url,
       headers,
@@ -144,13 +144,33 @@ export function createOoredoo(env) {
       directFirst: true,
     });
     if (isBlocked(res)) {
-      console.log('[ooredoo] rawRequest: استجابة غير JSON:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || '').slice(0, 160));
+      // المباشر محجوب من جدار أوريدو (HTML/أخطاء Cloudflare) — نُعيد المحاولة
+      // عبر بروكسي الجزائر لأنه يصل فعلاً (checkpoint يُثبَّت عبره).
+      console.log('[ooredoo] rawRequest: المباشر محجوب:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, '→ بروكسي');
+      const fb = await httpRequest(env, {
+        method,
+        url,
+        headers,
+        body,
+        relayKey: 'OOREDOO_RELAY_URL',
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (fb && fb.status && !isBlocked(fb)) {
+        console.log('[ooredoo] rawRequest: نجح عبر البروكسي (via=' + fb.via + ')');
+        return { statusCode: fb.status, data: parseBody(fb.data), text: fb.text, via: fb.via };
+      }
+      if (fb && fb.status) res = fb;
+      console.log('[ooredoo] rawRequest: بعد البروكسي:', method, url.split('/').pop(), 'status=', res.status, 'via=', res.via, 'body=', String(res.text || '').slice(0, 160));
     }
     return { statusCode: res.status || 500, data: parseBody(res.data), text: res.text, via: res.via };
   }
 
   async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
-    const res = await httpRequest(env, {
+    let res = await httpRequest(env, {
       method: 'POST',
       url: `${base}${CHECKPOINT_PATH}`,
       headers: {
@@ -168,7 +188,30 @@ export function createOoredoo(env) {
       directFirst: true,
     });
     if (isBlocked(res)) {
-      console.log('[ooredoo] checkpoint: استجابة غير JSON, status=', res.status, 'via=', res.via, 'body=', String(res.text || '').slice(0, 160));
+      console.log('[ooredoo] checkpoint: المباشر محجوب status=', res.status, 'via=', res.via, '→ بروكسي');
+      const fb = await httpRequest(env, {
+        method: 'POST',
+        url: `${base}${CHECKPOINT_PATH}`,
+        headers: {
+          ...commonHeaders({ sig, corr, ts, fp, msisdn, cookie }),
+          'Content-Type': 'application/json',
+          'x-path': path,
+          'x-method': method,
+        },
+        body: '{}',
+        relayKey: 'OOREDOO_RELAY_URL',
+        useDbProxy: true,
+        proxyService: 'ooredoo',
+        sid,
+        timeoutMs: 60000,
+        directFirst: false,
+      });
+      if (fb && fb.status && !isBlocked(fb)) {
+        console.log('[ooredoo] checkpoint: نجح عبر البروكسي (via=' + fb.via + ') status=', fb.status);
+        return fb;
+      }
+      if (fb && fb.status) res = fb;
+      console.log('[ooredoo] checkpoint: بعد البروكسي status=', res.status, 'via=', res.via);
       return null;
     }
     return res;
@@ -234,7 +277,8 @@ export function createOoredoo(env) {
     if (res.statusCode === 200) {
       const data = res.data;
       if (typeof data === 'string' && /<html/i.test(data)) {
-        return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
+        console.log('[ooredoo] attemptOtpSend: استجابة HTML رغم المحاولة (via=' + res.via + ') — ليست نجاح OTP');
+        return { statusCode: 503, data: { message: 'خدمة أوريدو محجوبة من هذا الاتصال، أعد المحاولة لاحقًا.' } };
       }
       if (data && data.access_token) return { statusCode: 200, data };
       return { statusCode: 200, data: { message: 'OTP sent', otpRequired: true } };
