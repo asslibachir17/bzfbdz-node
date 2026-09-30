@@ -208,7 +208,7 @@ export default {
       } else {
         res = await createOoredoo(env).sendVerificationCode(phone);
       }
-      return new Response(JSON.stringify({ statusCode: res.statusCode, data: res.data, error: res.error || null }), {
+      return new Response(JSON.stringify({ statusCode: res.statusCode, data: res.data, via: (res && (res.via || (res.raw && res.raw.via) || (res.data && res.data.via))) || null, error: res.error || null }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
