@@ -166,10 +166,13 @@ export function createOoredoo(env) {
     // بروكسيات معطوبة — نمرر الطلب عبر الوركر (أو مجموعة الوركرات) مباشرةً.
     if (env.OOREDOO_RELAY_URL) {
       // نجرّب الريلايس، وإن فشلت جميعها (status 0 = لا ريلاي أعاد رداً أصلاً)
-      // نعيد الجولة مرة واحدة فقط بزيادة التأخير. سابقاً 3 جولات كانت تضخّم
-      // الطلبات (حتى ~27 طلباً لنفس الرقم) وتُفعّل حجب anti-flood بسرعة.
+      // نعيد الجولة مرتين بزيادة التأخير. الحجب عند أوريدو متقطّع
+      // («Request Rejected») في انتظار ثوانٍ، فنمنحه فرصة قبل
+      // السقوط على بروكسي DB.
+      // لا نُعيد المحاولة على أي ردّ حقيقي من أوريدو (401/400/403) — ذلك
+      // جواب نهائي، وتكراره يُرسل رموز OTP زائدة على رقم المستخدم.
       let r = null;
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
         r = await httpRequest(env, {
           method,
           url,
@@ -182,9 +185,9 @@ export function createOoredoo(env) {
           directFirst: false,
         });
         if (r && r.status) break;
-        if (attempt < 2) {
+        if (attempt < 3) {
           const backoff = 1000 * attempt;
-          console.log(`[ooredoo] rawRequest: كل relays فشلت (محاولة ${attempt}/2) → انتظار ${backoff}ms`);
+          console.log(`[ooredoo] rawRequest: كل relays فشلت (محاولة ${attempt}/3) → انتظار ${backoff}ms`);
           await new Promise((res2) => setTimeout(res2, backoff));
         }
       }
