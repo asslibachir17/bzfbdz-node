@@ -4,6 +4,7 @@ import { createDjezzy } from './services/djezzy.js';
 import { createOoredoo } from './services/ooredoo.js';
 import { createMessenger } from './messenger.js';
 import { getLoadGuard } from './loadGuard.js';
+import { resolveRelays } from './config/relays.js';
 
 // مخزن السجلات الأخيرة في الذاكرة (يُقرأ عبر /debuglogs عند الحاجة)
 const ringLog = [];
@@ -245,7 +246,8 @@ export default {
         // تشخيص الإعداد: لا تُطبع أي قيمة سرّية، فقط الأسماء والطول.
         cfg: {
           missing,
-          relayCount: 1 + String(env.OOREDOO_RELAY_URL_LIST || '').split(',').filter((s) => s.trim()).length,
+          // العدد الفعلي بعد دمج env + القائمة المدمجة (لا عدد المتغيّرات وحده).
+          relayCount: resolveRelays(env.OOREDOO_RELAY_URL, env.OOREDOO_RELAY_URL_LIST).length,
           // نفس تحليل envFlag: النص "false" يجب ألا يُعتبر true.
           forceDbProxy: !(fp === '' || fp === 'false' || fp === '0' || fp === 'no' || fp === 'off'),
           tokenLen: String(env.PAGE_ACCESS_TOKEN || '').length,
@@ -339,7 +341,8 @@ export default {
         text: String(res && (res.text || (res.data && res.data.message) || '')).slice(0, 300),
         data: resData,
         elapsedMs: ua,
-        relayCount: relayEntries.length,
+        relayCount: resolveRelays(env.OOREDOO_RELAY_URL, env.OOREDOO_RELAY_URL_LIST).length,
+        relayProbed: relayEntries.length,
         relayEntries,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }

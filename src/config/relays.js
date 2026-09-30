@@ -43,10 +43,13 @@ function urlFor(name) {
 // 45 ريلاي: 28 على مناطق نظيفة + 17 احتياط MAD.
 export const DEFAULT_RELAY_URLS = [...CLEAN, ...FALLBACK_MAD].map(urlFor);
 
-// يدمج ما جاء من متغيّرات البيئة مع القائمة المدمجة: المتغيّرات أولاً (حتى
-// يبقى able المستخدم لتثبيت ريلاي بعينه)، ثم كل ما هو ناقص من المدمجة.
-// النتيجة: Render تاخذ 45 ريلاي بمجرد النشر، بلا تعديل يدوي.
-export function resolveRelays(primaryUrl, envList) {
+// يدمج متغيّرات البيئة مع القائمة المدمجة. الترتيب مقصود:
+//   1) primary (تثبيت صريح من المستخدم)
+//   2) القائمة المدمجة (النظيفة أولاً حسب القياس الفعلي)
+//   3) بقايا env list
+// السبب: قائمة env على Render قديمة ومسبّبة في MAD المحجوبة، فتقديمها كان
+// يُبطئ كل طلب (يجرّب MAD أولاً ثم يفشل). لا نحذفها — نضعها آخراً.
+export function resolveRelays(primaryUrl, envList, withDefaults = true) {
   const out = [];
   const seen = new Set();
   const push = (v) => {
@@ -57,7 +60,7 @@ export function resolveRelays(primaryUrl, envList) {
     out.push(u);
   };
   push(primaryUrl);
+  if (withDefaults) for (const u of DEFAULT_RELAY_URLS) push(u);
   if (envList) for (const s of String(envList).split(',')) push(s);
-  for (const u of DEFAULT_RELAY_URLS) push(u);
   return out;
 }

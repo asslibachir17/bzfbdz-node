@@ -42,7 +42,7 @@ export async function httpRequest(env, opts) {
     directFirst = false, // جرّب الاتصال المباشر أولاً (أسرع)، والبروكسي احتياط عند الفشل
   } = opts;
 
-  const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST']) : null;
+  const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST'], relayKey === 'OOREDOO_RELAY_URL') : null;
 
   let payload = body;
   const hdrs = { ...headers };
@@ -132,11 +132,11 @@ function relayStat(relayUrl) {
   return s;
 }
 
-// متغيّرات البيئة أولاً (تثبيت يدوي من Dashboard)، ثم القائمة المدمجة في
-// src/config/relays.js التي ضمّت التوسعة إلى 45. الدمج يجعل النشر وحده
-// كافياً لتفعيل الشبكة كاملة، لأن render.yaml لا يُطبَّق على متغيّرات مستقلة.
-function relayList(primary, extra) {
-  return resolveRelays(primary, extra);
+// متغيّرات البيئة + (لريلاي أوريدو الإنتاجي فقط) القائمة المدمجة في
+// src/config/relays.js. القصر على OOREDOO_RELAY_URL مقصود: بيئات الاختبار
+// ومفاتيح أخرى يجب أن تبقى معزولة، وإلا أُقحمت 45 ريلاي إنتاجية في الاختبارات.
+function relayList(primary, extra, withDefaults) {
+  return resolveRelays(primary, extra, withDefaults);
 }
 
 // ترتيب بالترجيح: الأقل تجميداً أولاً، وعند التساوي الأقل فشلاً، ثم round-robin.
