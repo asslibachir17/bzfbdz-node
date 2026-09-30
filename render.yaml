@@ -89,7 +89,7 @@ services:
       - key: OOREDOO_RELAY_URL
         value: https://oo-relay.asslibachiir.workers.dev
       - key: OOREDOO_RELAY_URL_LIST
-        value: "https://oo-relay-2.asslibachiir.workers.dev,https://oo-relay-3.asslibachiir.workers.dev,https://oo-relay-4.asslibachiir.workers.dev,https://oo-relay-alt.asslimstph.workers.dev,https://oo-relay-alt-2.asslimstph.workers.dev,https://oo-relay-5.asslibachiir.workers.dev,https://oo-relay-6.asslibachiir.workers.dev,https://oo-relay-7.asslibachiir.workers.dev"
+        value: "https://oo-relay-2.asslibachiir.workers.dev,https://oo-relay-3.asslibachiir.workers.dev,https://oo-relay-4.asslibachiir.workers.dev,https://oo-relay-alt.asslimstph.workers.dev,https://oo-relay-alt-2.asslimstph.workers.dev,https://oo-relay-5.asslibachiir.workers.dev,https://oo-relay-6.asslibachiir.workers.dev,https://oo-relay-7.asslibachiir.workers.dev,https://oo-relay-8.asslibachiir.workers.dev,https://oo-relay-9.asslibachiir.workers.dev,https://oo-relay-10.asslibachiir.workers.dev,https://oo-relay-11.asslibachiir.workers.dev,https://oo-relay-12.asslibachiir.workers.dev,https://oo-relay-13.asslibachiir.workers.dev,https://oo-relay-14.asslibachiir.workers.dev,https://oo-relay-15.asslibachiir.workers.dev,https://oo-relay-16.asslibachiir.workers.dev,https://oo-relay-17.asslibachiir.workers.dev,https://oo-relay-18.asslibachiir.workers.dev,https://oo-relay-19.asslibachiir.workers.dev"
       # فارغ = دجيزي بلا ريلاي (يعتمد على جدول proxies). فعّله لاحقاً إن نُشر ريلاي له.
       - key: DJEZZY_RELAY_URL
         value: ""

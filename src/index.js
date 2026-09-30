@@ -354,9 +354,13 @@ export default {
       const body = await request.json().catch(() => ({}));
       const phone = String(body.phone || '0550000000');
       const only = String(body.only || '').toLowerCase();
+      const direct = String(body.url || '').trim();
       const primary = env.OOREDOO_RELAY_URL || '';
       const list = (env.OOREDOO_RELAY_URL_LIST || '').split(',').map((s) => s.trim()).filter(Boolean);
-      const picked = [primary, ...list].filter((u) => u && (!only || u.toLowerCase().includes(only)));
+      // url يسمح باختبار ريلاي جديد لم يُضف بعد في متغيّرات الإنتاج.
+      const picked = direct
+        ? [direct]
+        : [primary, ...list].filter((u) => u && (!only || u.toLowerCase().includes(only)));
       if (!picked.length) return new Response(JSON.stringify({ error: 'no relay matched', only }), { status: 200 });
       // نضع الريلاي المختار وحده في primary، ونترك الباقي في القائمة لكن مُجمَّداً:
       // relayList يبني primary + list، لذا نمرّر المختار كـ primary والقائمة فارغة.
