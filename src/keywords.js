@@ -26,6 +26,7 @@ const ACTION_KEYWORDS = {
   osnap: ['سناب', 'سناب شات', 'snapchat', 'snap'],
   oaccount: ['معلومات', 'الشريحه', 'الشريحة', 'معلومات الشريحه', 'حسابي', 'الحساب', 'معلومه', 'info'],
   oservices: ['العروض', 'عروض', 'الكل', 'offers'],
+  obundles: ['العروض', 'عروض', 'الكل', 'offers'],
   obyop: ['انستغرام', 'انستا', 'instagram', 'يوتيوب', 'youtube', 'واتساب', 'whatsapp', 'فيسبوك', 'فايسبوك', 'facebook', 'تيك توك', 'tiktok'],
   back: ['رجوع', 'القائمه', 'القائمة', 'الرئيسيه', 'الرئيسية', 'العودة', 'back'],
 };
@@ -129,7 +130,7 @@ export function buildFallbackOptions(phoneNumber, operator) {
       p('ogift'),
       p('osnap'),
       p('oaccount'),
-      p('oservices'),
+      p('obundles'),
       ...Object.keys(BYOP_KEYWORDS).map((code) => ({ title: BYOP_KEYWORDS[code][0], payload: `obyopcode:${phoneNumber}:${operator}:${code}` })),
     ];
   }

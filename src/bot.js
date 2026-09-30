@@ -541,8 +541,39 @@ function createBot(env, ctx, platform = "fb") {
         await showServicesMenu(sender, phoneNumber, operator, session);
         break;
       }
+      case "obundles": {
+        await showBundlesSubmenu(sender, phoneNumber, operator, session);
+        break;
+      }
       case "oservices": {
         await showOoredooOffers(sender, phoneNumber, operator, session);
+        break;
+      }
+      case "oexclusive": {
+        const result = await showOoredooBundles(sender, phoneNumber, operator, "exclusive", session);
+        if (result)
+          await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "oloyalty": {
+        const result = await showOoredooBundles(sender, phoneNumber, operator, "loyalty", session);
+        if (result)
+          await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "odynbuy": {
+        const code = parts[3];
+        const name = parts[4] ? decodeURIComponent(parts[4]) : "";
+        const result = await confirmDynamicBundlePurchase(sender, phoneNumber, operator, code, name);
+        if (result)
+          await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "odynconfirm": {
+        const code = parts[3];
+        const result = await executeDynamicBundlePurchase(sender, phoneNumber, operator, code, session);
+        if (result)
+          await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
         break;
       }
       case "ogift": {
@@ -1535,7 +1566,7 @@ ${msg}` : ""}`,
       quickReplies = [
         ...serviceButtons,
         { content_type: "text", title: "معلومات الشريحة ℹ", payload: `oaccount:${inputPhone}:${operator}:${sender}` },
-        { content_type: "text", title: "📦 العروض", payload: `oservices:${inputPhone}:${operator}:${sender}` }
+        { content_type: "text", title: "📦 العروض", payload: `obundles:${inputPhone}:${operator}:${sender}` }
       ];
     } else {
       const djezzyUser = await getUserByPhone(env, inputPhone);
@@ -1575,6 +1606,19 @@ ${msg}` : ""}`,
     const numbered = numberedServiceLines(quickReplies);
     const finalText = numbered ? `${text}\n\n${numbered}` : text;
     await send(sender, { text: finalText, quick_replies: quickReplies }, session);
+  }
+  // قائمة فرعية للعروض: زر واحد في القائمة الرئيسية يفتح هذه القائمة بثلاثة أزرار.
+  async function showBundlesSubmenu(sender, inputPhone, operator, session) {
+    const lines = [`📦 العروض\n📱 رقم الهاتف: ${maskOoredooPhone(inputPhone)}`, "", "🗳 اختر نوع العرض:"];
+    const quick_replies = [
+      { content_type: "text", title: "📦 عروض مخصصة", payload: `oservices:${inputPhone}:${operator}:${sender}` },
+      { content_type: "text", title: "⭐ عروض خاصة", payload: `oexclusive:${inputPhone}:${operator}:${sender}` },
+      { content_type: "text", title: "🎁 عروض وفاء", payload: `oloyalty:${inputPhone}:${operator}:${sender}` },
+      ...backQR(inputPhone, operator)
+    ];
+    const numbered = numberedServiceLines(quick_replies);
+    const text = numbered ? `${lines.join("\n")}\n\n${numbered}` : lines.join("\n");
+    await send(sender, { text, quick_replies }, session);
   }
   const OOREDOO_PLAN_NAMES = { "736": "N'YOOZ", "682": "682", "654": "654", "DIMAN": "DIMA", "DIMA": "DIMA" };
   function resolveOoredooPlanName(ratePlan) {
@@ -2104,6 +2148,168 @@ ${lines.join("\n").trim()}`;
       const msg = String(result.data.message);
       if (msg.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH")) {
         return { text: `⛔ رصيدك غير كافٍ لتفعيل باقة ${name}.
+اشحن رصيدك ثم أعد المحاولة.`, quick_replies: back };
+      }
+      return { text: `⚠️ لم يتم تفعيل الباقة: ${msg}`, quick_replies: back };
+    }
+    if (result.statusCode === 401) {
+      await sendVerificationCode(sender, phoneNumber, session);
+      return null;
+    }
+    return { text: "⚠️ فشل تفعيل الباقة، يرجى المحاولة لاحقًا.", quick_replies: back };
+  }
+  // ---------- عروض حصرية / عروض وفاء (CVM) ----------
+  function parseCvmBundles(data) {
+    // البنية: body.getBundlesResponse.responseData[] -> { attributes: { code, name:{ar}, instances:[{ attributes:{ price, periodic-amount, periodic-unit, allowances:[{attributes:{usage-type, usage-value, usage-unit, destination, code}}] } }] } }
+    const durationUnitMap = { day: "يوم", days: "يوم", week: "أسبوع", weeks: "أسبوع", month: "شهر", months: "شهر" };
+    const destMap = { FB: "فيسبوك", YT: "يوتيوب", IG: "انستاغرام", SC: "سناب شات", Tt: "تيك توك", TIKTOK: "تيك توك", WA: "واتساب", YT_UAE: "يوتيوب" };
+    const unitArMap = { minute: "دقيقة", minutes: "دقيقة", min: "دقيقة", gb: "جيغا", mb: "ميغا", kb: "كيلو", dzg: "دج", dzd: "دج", da: "دج", s: "ثانية" };
+    const out = [];
+    if (!data || typeof data !== "object") return out;
+    const inner = data.body && typeof data.body === "object" ? data.body : data;
+    const responseData = inner.getBundlesResponse?.responseData;
+    if (!Array.isArray(responseData)) return out;
+    for (const item of responseData) {
+      const attrs = item?.attributes || {};
+      const code = attrs.code;
+      if (!code) continue;
+      const nameAr = attrs.name?.ar || attrs.name || code;
+      const inst = Array.isArray(attrs.instances) && attrs.instances[0]?.attributes || {};
+      const price = inst.price != null ? String(inst.price) : null;
+      const amount = attrs["periodic-amount"] != null ? String(attrs["periodic-amount"]) : (inst["periodic-amount"] != null ? String(inst["periodic-amount"]) : null);
+      const unit = attrs["periodic-unit"] ? String(attrs["periodic-unit"]).toLowerCase() : (inst["periodic-unit"] ? String(inst["periodic-unit"]).toLowerCase() : null);
+      const unitAr = unit ? durationUnitMap[unit] || unit : null;
+      const duration = amount ? `${amount} ${unitAr || ""}`.trim() : null;
+      let services = [];
+      const allowArr = Array.isArray(inst.allowances) ? inst.allowances : [];
+      for (const a of allowArr) {
+        const aa = a?.attributes || {};
+        const type = String(aa["usage-type"] || "");
+        const dest = String(aa.destination || aa.code || "").toUpperCase();
+const val = aa["usage-value"] != null ? String(aa["usage-value"]) : null;
+      const u2 = aa["usage-unit"] ? String(aa["usage-unit"]) : null;
+      const u2Ar = u2 ? unitArMap[u2.toLowerCase()] || u2 : null;
+      let label;
+      if (destMap[dest]) {
+        label = destMap[dest];
+      } else if (type === "voice") {
+        label = dest === "HOME" ? "مكالمات" : dest === "NATIONAL" ? "خارج الشبكة" : "مكالمات";
+      } else if (type === "sms") {
+        label = "رسائل";
+      } else if (type === "data") {
+        label = "إنترنت";
+      } else {
+        label = dest && dest !== "ANY" ? dest : "إنترنت";
+      }
+      const valTxt = val && u2Ar && val !== "0" ? `${val} ${u2Ar}` : null;
+      services.push({ label, value: valTxt });
+      }
+      if (!services.length) services = [{ label: "إنترنت", value: null }];
+      out.push({ code, name: nameAr, price, duration, services });
+    }
+    return out;
+  }
+  function renderCvmBundleItem(b, i) {
+    const color = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫", "⚪", "🔶", "🔷", "🟥"][i % 12];
+    const lines = [`${color} • ${b.price ? `${b.price} دج` : "‏"} 💸`];
+    for (const s of b.services || []) {
+      lines.push(`🌐 • ${s.label}${s.value ? ` : ${s.value}` : ""}`);
+    }
+    if (b.duration) lines.push(`🗓️ • مدة : ${b.duration}`);
+    return lines.join("\n");
+  }
+  async function showOoredooBundles(sender, phoneNumber, operator, kind, session) {
+    const back = backQR(phoneNumber, operator);
+    const lockKey = kind === "exclusive" ? `obuy:exclusive:${phoneNumber}` : `obuy:loyalty:${phoneNumber}`;
+    const lock = await checkAndSetCooldown(env, lockKey, 6e4);
+    if (!lock.ok)
+      return null;
+    const ownership = await verifyOoredooOwnership(sender, phoneNumber, operator);
+    if (!ownership.ok)
+      return ownership.fbResponse;
+    if (!await botServiceCooldown(sender, `o${kind}`, phoneNumber, session, 6e4))
+      return null;
+    const tokenRes = await getOoredooFreshToken(sender, phoneNumber, operator, session);
+    if (!tokenRes.access_token)
+      return tokenRes.fbResponse || {};
+    const msisdn = ooredooMsisdn(phoneNumber);
+    const raw = kind === "exclusive"
+      ? await ooredoo.promoBundles({ token: tokenRes.access_token, msisdn })
+      : await ooredoo.loyaltyBundles({ token: tokenRes.access_token, msisdn });
+    if (raw.data?.blocked) {
+      return { text: raw.data.message || "الخدمة غير متاحة حاليًا.", quick_replies: back };
+    }
+    if (raw.statusCode === 401) {
+      await sendVerificationCode(sender, phoneNumber, session);
+      return null;
+    }
+    const bundles = parseCvmBundles(raw.data || {});
+    console.log(`[ooredoo-bundles][${kind}] status=${raw.statusCode} via=${raw.via} blocked=${!!raw.data?.blocked} parsed=${bundles.length} dataShape=${raw.data && typeof raw.data === "object" ? Object.keys(raw.data).join(",") : typeof raw.data}`);
+    const masked = maskOoredooPhone(phoneNumber);
+    if (!bundles.length) {
+      return { text: `⚠️ لا توجد ${kind === "exclusive" ? "عروض حصرية" : "عروض وفاء"} متاحة حاليًا.\n📱 الرقم: ${masked}`, quick_replies: back };
+    }
+    const title = kind === "exclusive" ? "⭐ عروض حصرية 🏷️" : "🎁 عروض وفاء 🏷️";
+    const body = bundles.map((b, i) => `${i + 1}- ${b.name}\n${renderCvmBundleItem(b, i)}`).join("\n\n");
+    const lines = [`${title}\n📱 الرقم: ${masked}`, "", body];
+    const quick_replies = bundles.map((b) => ({
+      content_type: "text",
+      title: `عرض ${b.price ? b.price : ""}`.trim(),
+      payload: `odynbuy:${phoneNumber}:${operator}:${encodeURIComponent(b.code)}:${encodeURIComponent(`${b.name}|${b.price || ""}`)}`
+    }));
+    quick_replies.push(...back);
+    return { text: `${lines.join("\n")}\n\nاختر العرض المناسب من الأزرار أدناه 🔽`, quick_replies };
+  }
+  async function confirmDynamicBundlePurchase(sender, phoneNumber, operator, code, namePrice) {
+    const bundleCode = decodeURIComponent(code || "");
+    const rawName = namePrice ? decodeURIComponent(namePrice) : "";
+    const [bundleName = bundleCode, bundlePrice = ""] = rawName.split("|");
+    const back = backQR(phoneNumber, operator);
+    const ownership = await verifyOoredooOwnership(sender, phoneNumber, operator);
+    if (!ownership.ok)
+      return ownership.fbResponse;
+    return {
+      text: `✅ العرض: ${bundleName}
+📱 رقمك: ${formatPhoneNumber(phoneNumber)}
+💵 السعر: ${bundlePrice ? `${bundlePrice} دج` : "-"}
+
+هل تريد التفعيل الآن؟`,
+      quick_replies: [
+        { content_type: "text", title: "✅ نعم، فعل العرض", payload: `odynconfirm:${phoneNumber}:${operator}:${encodeURIComponent(bundleCode)}` },
+        ...back
+      ]
+    };
+  }
+  async function executeDynamicBundlePurchase(sender, phoneNumber, operator, code, session) {
+    const bundleCode = decodeURIComponent(code || "");
+    const back = backQR(phoneNumber, operator);
+    const lock = await checkAndSetCooldown(env, `obuy:dynamic:${phoneNumber}:${bundleCode}`, 6e4);
+    if (!lock.ok)
+      return null;
+    const ownership = await verifyOoredooOwnership(sender, phoneNumber, operator);
+    if (!ownership.ok)
+      return ownership.fbResponse;
+    if (!await botServiceCooldown(sender, "odynconfirm", phoneNumber, session, 6e4))
+      return null;
+    const tokenRes = await getOoredooFreshToken(sender, phoneNumber, operator, session);
+    if (!tokenRes.access_token)
+      return tokenRes.fbResponse || {};
+    const msisdn = ooredooMsisdn(phoneNumber);
+    const result = await ooredoo.purchaseDynamicBundle({ token: tokenRes.access_token, msisdn, code: bundleCode });
+    if (result.data?.blocked) {
+      return { text: result.data.message || "الخدمة غير متاحة حاليًا.", quick_replies: back };
+    }
+    if (result.statusCode === 200 || result.statusCode === 201) {
+      await setCooldown(env, `bot:odynconfirm:${sender}:${phoneNumber}`, 6e4);
+      return withFbButton({ text: `✅ تم تفعيل الباقة بنجاح!
+📦 الباقة: ${bundleCode}
+📱 الرقم: ${formatPhoneNumber(phoneNumber)}`, quick_replies: back }, platform);
+    }
+    if (result.statusCode === 409 && (result.data?.message || result.data?.code)) {
+      const msg = String(result.data.message || "");
+      const codeErr = String(result.data.code || "");
+      if (msg.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH") || codeErr.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH") || msg.includes("Credit Balance Not Enough")) {
+        return { text: `⛔ رصيدك غير كافٍ لتفعيل هذه الباقة.
 اشحن رصيدك ثم أعد المحاولة.`, quick_replies: back };
       }
       return { text: `⚠️ لم يتم تفعيل الباقة: ${msg}`, quick_replies: back };

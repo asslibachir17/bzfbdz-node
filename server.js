@@ -103,6 +103,15 @@ function startSchedulers(env, ctx) {
 }
 
 async function main() {
+  // حاجز أمان: خطأ غير متوقع (رفض وعد شارد مثلاً) كان يُسقط عملية الخادم كاملة
+  // ويوقف الويب هوك. نسجّله ونكمل بدل الإنهيار.
+  process.on('unhandledRejection', (e) => {
+    console.error('[unhandledRejection]', (e && e.stack) || e);
+  });
+  process.on('uncaughtException', (e) => {
+    console.error('[uncaughtException]', (e && e.stack) || e);
+  });
+
   loadDotEnv();
   const db = await createDb();
   const env = buildEnv(db);

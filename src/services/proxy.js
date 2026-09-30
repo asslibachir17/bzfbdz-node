@@ -84,8 +84,9 @@ function markBadD1(env, proxyId) {
   d1WriteCache.set(proxyId, Date.now());
   const until = Date.now() + BAD_TTL_MS;
   try {
+    // .run() يُرجع وعداً؛ بدون .catch() يصبح رفضه unhandledRejection يسقط العملية.
     env.DB.prepare('UPDATE proxies SET blocked_until = ? WHERE id = ?')
-      .bind(until, proxyId).run();
+      .bind(until, proxyId).run().catch(() => {});
   } catch {}
 }
 
@@ -94,7 +95,7 @@ function markGoodD1(env, proxyId) {
   d1WriteCache.set(proxyId, Date.now());
   try {
     env.DB.prepare('UPDATE proxies SET blocked_until = 0 WHERE id = ?')
-      .bind(proxyId).run();
+      .bind(proxyId).run().catch(() => {});
   } catch {}
 }
 

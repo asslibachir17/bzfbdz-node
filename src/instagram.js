@@ -18,17 +18,27 @@ export function createInstagram(env) {
   const url = `${baseUrl}/${pageId}/messages?access_token=${encodeURIComponent(token)}`;
 
   function sanitizeResponse(response) {
-    if (!response || !Array.isArray(response.quick_replies) || !response.quick_replies.length) {
-      return response;
+    if (!response) return response;
+    if (!Array.isArray(response.quick_replies) || !response.quick_replies.length) {
+      // لا نرسل مصفوفة فارغة — IGSendAPI يرفضها كما يرفضها Facebook Send API.
+      if (!('quick_replies' in response)) return response;
+      const { quick_replies: _drop, ...rest } = response;
+      return rest;
     }
-    const quick_replies = response.quick_replies.map((q) => {
-      const clean = {};
-      if (q.content_type) clean.content_type = q.content_type;
-      if (q.title !== undefined) clean.title = q.title;
-      if (q.payload !== undefined) clean.payload = q.payload;
-      if (q.image_url) clean.image_url = q.image_url;
-      return clean;
-    });
+    const quick_replies = response.quick_replies
+      .map((q) => {
+        const clean = {};
+        if (q.content_type) clean.content_type = q.content_type;
+        if (q.title !== undefined) clean.title = q.title;
+        if (q.payload !== undefined) clean.payload = q.payload;
+        if (q.image_url) clean.image_url = q.image_url;
+        return clean;
+      })
+      .filter((q) => Object.keys(q).length > 0);
+    if (!quick_replies.length) {
+      const { quick_replies: _drop, ...rest } = response;
+      return rest;
+    }
     return { ...response, quick_replies };
   }
 

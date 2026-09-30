@@ -40,22 +40,28 @@ export async function checkAndSetCooldown(env, key, cooldownMs, t = Date.now()) 
 
 // فحص + تسجيل في عملية واحدة (UPSERT) — رحلة شبكة واحدة بدل اثنتين.
 // يرجع { ok: true } عند السماح (إدراج جديد أو كولدداون منتهٍ)،
-// و{ ok: false, leftMs } عند بقاء الكولدداون قائمًا (قيمة قديمة محفوظة).
+// و{ ok: false, leftMs } عند بقاء الكوللداون قائمًا (قيمة قديمة محفوظة).
 // المقارنة المعيارية للنهاية تستخدم علامة counter موثوقة بدل مقارنة القيم
 // (التي تفشل عندما تتساوى القيمة القديمة والجديدة) — counter=-1 لدى الحظر،
 // و0/1 لدى السماح (مفتاح mid: لا يُقرأ عداده في أي مكان).
+//
+// ملاحظة مهمة: نستخدم معاملات ? المرقّمة بالترتيب (وليس ?1/?2/?3) لأن better-sqlite3
+// (نسخة SQLite) لا يدعم ترقيم المعاملات ويفشل بـ "Too many parameter values were provided".
+// طبقة toPgSql في runtime/db.js تحوّل ? إلى $1,$2,$3 تلقائياً ليعمل PostgreSQL أيضاً.
 export async function checkAndSetCooldownOne(env, key, cooldownMs, t = Date.now()) {
   const until = t + cooldownMs;
+  // ترتيب المعاملات يطابق ترتيب ظهورها في الجملة: key, until, t, t
   const row = await first(
     env,
-    `INSERT INTO cooldowns (key, until, counter) VALUES (?2, ?3, 1)
+    `INSERT INTO cooldowns (key, until, counter) VALUES (?, ?, 1)
      ON CONFLICT(key) DO UPDATE SET
-       until = CASE WHEN cooldowns.until > ?1 THEN cooldowns.until ELSE excluded.until END,
-       counter = CASE WHEN cooldowns.until > ?1 THEN -1 ELSE 0 END
+       until = CASE WHEN cooldowns.until > ? THEN cooldowns.until ELSE excluded.until END,
+       counter = CASE WHEN cooldowns.until > ? THEN -1 ELSE 0 END
      RETURNING until, counter`,
-    t,
     key,
-    until
+    until,
+    t,
+    t
   );
   if (Number(row?.counter) === -1) {
     const left = Number(row?.until) - t;

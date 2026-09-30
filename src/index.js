@@ -127,14 +127,14 @@ export default {
           method,
           url: targetUrl,
           headers: method === 'GET' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Djezzy/2.6.7' },
-          body: method === 'GET' ? undefined : new URLSearchParams({ msisdn: '213778830644', client_id: '87pIExRhxBb3_wGsA5eSEfyATloa', scope: 'smsotp' }).toString(),
+          body: method === 'GET' ? undefined : new URLSearchParams({ msisdn: '213778830644', client_id: env.DJEZZY_CLIENT_ID_V2 || '', scope: 'smsotp' }).toString(),
           service: body.service || 'djezzy',
         }, 30000);
         res = { statusCode: r.status || 599, data: { via: r.via, status: r.status, text: String(r.text || '').slice(0, 400), error: r.error || null } };
       } else if (target === 'proxy-direct') {
         // استدعاء proxyRequest مباشرة (بدون سقوط) لرؤية خطأ البروكسي الحقيقي
         const { default: proxyRequest } = await import('./services/proxy.js');
-        const clientId = '6E6CwTkp8H1CyQxraPmcEJPQ7xka';
+        const clientId = env.DJEZZY_CLIENT_ID || '';
         const msisdn = `213${String(phone).replace(/^0/, '')}`;
         const form = new URLSearchParams({ msisdn, client_id: clientId, scope: 'smsotp' }).toString();
         const targetUrl = body.ipUrl || 'https://apim.djezzy.dz/oauth2/registration';
@@ -170,6 +170,21 @@ export default {
       } else if (target === 'ooredoo-verify') {
         // تحقق من رمز OTP — نجاح = 200 مع access_token (عكس إرسال الرمز الذي يكون 403)
         res = await createOoredoo(env).verifyCode(phone, String(body.code || ''));
+      } else if (target === 'ooredoo-bundles') {
+        // عروض حصرية / وفاء عبر BFF + اشتراك ديناميكي (اختبار النسخة)
+        const ooredoo = createOoredoo(env);
+        const msisdn = String(body.msisdn || '213558293697');
+        const token = String(body.token || '');
+        const kind = String(body.kind || 'exclusive');
+        let tmp;
+        if (kind === 'purchase') {
+          tmp = await ooredoo.purchaseDynamicBundle({ token, msisdn, code: String(body.code || '') });
+        } else if (kind === 'loyalty') {
+          tmp = await ooredoo.loyaltyBundles({ token, msisdn });
+        } else {
+          tmp = await ooredoo.promoBundles({ token, msisdn });
+        }
+        res = { statusCode: tmp.statusCode, data: tmp.data, text: String(tmp.text || '').slice(0, 2500), via: tmp.via };
       } else if (target === 'djezzy-v2') {
         // نفس ما يستخدمه البوت حالياً: sendVerificationCodeV2 (mobile-api/oauth2/registration, UA 3.0.7)
         res = await createDjezzy(env).sendVerificationCodeV2(phone);
@@ -320,6 +335,26 @@ export default {
       const { httpRequest } = await import('./services/http.js');
       const { default: proxyRequest } = await import('./services/proxy.js');
       const probeUrl = 'https://apis.ooredoo.dz/my_ooredoo/rest/v1/users/self';
+      // فحص مسار الـ relay وحده (بلا useDbProxy): هو المسار الذي يستخدمه ooredoo.js فعلياً
+      // طالما OOREDOO_FORCE_DBPROXY=false. الاختبارين أدناه يُجبران البروكسي عمداً.
+      let out0 = { mode: 'relay-only' };
+      try {
+        const r0 = await httpRequest(env, {
+          method: 'GET',
+          url: probeUrl,
+          headers: { 'User-Agent': 'Dart/3.4 (dart:io)', Accept: '*/*' },
+          relayKey: 'OOREDOO_RELAY_URL',
+          useDbProxy: false,
+          timeoutMs: 45000,
+          directFirst: false,
+        });
+        out0.status = r0.status;
+        out0.via = r0.via;
+        out0.error = r0.error || null;
+        out0.text = String(r0.text || '').slice(0, 300);
+      } catch (e) {
+        out0.error = 'httpRequest threw: ' + (e && e.message || e);
+      }
       let out = { mode: 'httpRequest-ooredoo' };
       try {
         const r = await httpRequest(env, {
@@ -349,7 +384,7 @@ export default {
       } catch (e) {
         out2.error = 'proxyRequest threw: ' + (e && e.message || e);
       }
-      return new Response(JSON.stringify({ direct: out, proxy2: out2 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ relayOnly: out0, direct: out, proxy2: out2 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
     // ---------- إحصائيات نظام الضغط (محمي بـ DIAG_KEY) ----------

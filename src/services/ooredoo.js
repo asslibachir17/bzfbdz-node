@@ -130,9 +130,22 @@ export function createOoredoo(env) {
     };
   }
 
+  // قراءة علم منطقي من متغير بيئة نصّي.
+  // السبب: كل القيم تأتي من .env كنصوص، وأي نص غير فارغ —
+  // حتى "false" و"0" و"no" — يُعتبر true في JavaScript.
+  // فكان OOREDOO_FORCE_DBPROXY=false يُفعّل الإجبار فعلياً ويوجّه لأوريدو
+  // عبر بروكسي منتهٍ (407) بدل الـ relay. هنا نحلّل النص صراحةً.
+  function envFlag(name) {
+    const v = env[name];
+    if (v === undefined || v === null) return false;
+    const s = String(v).trim().toLowerCase();
+    if (s === '') return false;
+    return !(s === 'false' || s === '0' || s === 'no' || s === 'off');
+  }
+
   async function rawRequest(method, url, headers, body, sid) {
     // إجبار بروكسي DB (تجريبي): تجاهل الـ relay كلياً والذهاب للبروكسي مباشرة.
-    if (env.OOREDOO_FORCE_DBPROXY) {
+    if (envFlag('OOREDOO_FORCE_DBPROXY')) {
       const r = await httpRequest(env, {
         method,
         url,
@@ -228,7 +241,7 @@ export function createOoredoo(env) {
   }
 
   async function checkpoint(sig, corr, ts, fp, msisdn, path, method, cookie, sid) {
-    if (env.OOREDOO_FORCE_DBPROXY) {
+    if (envFlag('OOREDOO_FORCE_DBPROXY')) {
       const r = await httpRequest(env, {
         method: 'POST',
         url: `${base}${CHECKPOINT_PATH}`,
@@ -512,6 +525,19 @@ export function createOoredoo(env) {
       bffRequest('GET', '/api/ooredoo-bff/userInfo/personal', o.token, o.msisdn, {
         extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8' },
       }),
+    promoBundles: (o) =>
+      bffRequest('GET', '/api/ooredoo-bff/cvm/promo-bundles', o.token, o.msisdn, {
+        extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8', platform: 'web' },
+      }),
+    loyaltyBundles: (o) =>
+      bffRequest('GET', '/api/ooredoo-bff/cvm/getBundles', o.token, o.msisdn, {
+        extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8', platform: 'web' },
+      }),
+    purchaseDynamicBundle: (o) =>
+      bffRequest('POST', '/api/ooredoo-bff/cvm/dynamic-bundle-purchase', o.token, o.msisdn, {
+        body: JSON.stringify({ bundleCode: o.code }),
+        extraHeaders: { 'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8', platform: 'web' },
+      }),
   };
 
   function purchaseByop({ token, msisdn, code }) {
@@ -531,6 +557,7 @@ export function createOoredoo(env) {
     refreshToken,
     ...BFF,
     purchaseByop,
+    purchaseDynamicBundle: BFF.purchaseDynamicBundle,
     BYOP_CODES,
     BYOP_LIMITED_CODES,
   };
