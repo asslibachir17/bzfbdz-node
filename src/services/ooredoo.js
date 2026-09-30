@@ -165,17 +165,32 @@ export function createOoredoo(env) {
     // فهو الطريق المعتمد لأوريدو: بدون direct (والذي على Render يعود HTML حجب) ولا
     // بروكسيات معطوبة — نمرر الطلب عبر الوركر (أو مجموعة الوركرات) مباشرةً.
     if (env.OOREDOO_RELAY_URL) {
-      const r = await httpRequest(env, {
-        method,
-        url,
-        headers,
-        body,
-        relayKey: 'OOREDOO_RELAY_URL',
-        useDbProxy: false,
-        sid,
-        timeoutMs: 60000,
-        directFirst: false,
-      });
+      // نجرّب الريلايس، وإن فشلت جميعها (status 0 = لا ريلاي أعاد رداً أصلاً)
+      // نعيد الجولة مرتين بزيادة التأخير. الحجب عند أوريدو متقطّع
+      // («Request Rejected») في努力学习 بعد ثوانٍ، فنمنحه فرصة قبل
+      // السقوط على بروكسي DB.
+      // لا نُعيد المحاولة على أي ردّ حقيقي من أوريدو (401/400/403) — ذلك
+      // جواب نهائي، وتكراره يُرسل رموز OTP زائدة على رقم المستخدم.
+      let r = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        r = await httpRequest(env, {
+          method,
+          url,
+          headers,
+          body,
+          relayKey: 'OOREDOO_RELAY_URL',
+          useDbProxy: false,
+          sid,
+          timeoutMs: 60000,
+          directFirst: false,
+        });
+        if (r && r.status) break;
+        if (attempt < 3) {
+          const backoff = 1000 * attempt;
+          console.log(`[ooredoo] rawRequest: كل relays فشلت (محاولة ${attempt}/3) → انتظار ${backoff}ms`);
+          await new Promise((res2) => setTimeout(res2, backoff));
+        }
+      }
       if (r && r.status) {
         console.log('[ooredoo] rawRequest via relay:', method, url.split('/').pop(), 'status=', r.status, 'via=', r.via);
         return { statusCode: r.status || 500, data: parseBody(r.data), text: r.text, via: r.via };

@@ -152,6 +152,17 @@ function isOoredooRejected(data) {
   return /Request Rejected/i.test(data) && /<html/i.test(data);
 }
 
+// ريلاي أخفق مؤقتاً بسبب بنية تحتية أو حجر upstream: HTML حجب، خطأ Cloudflare
+// (520-526)، أو انقطاع الشبكة. هذه أخطاء عابرة على مستوى الريلاي نفسه، فنجرّب
+// ريلاياً آخر بدل إرجاع الفشل للمستخدم.
+function isRelayInfrastructureFailure(status, data) {
+  const s = Number(status) || 0;
+  if (s === 0) return true;
+  if (s >= 520 && s <= 526) return true;
+  if (typeof data === 'string' && /<html|<!doctype/i.test(data)) return true;
+  return false;
+}
+
 async function relayRequest(env, relays, spec, timeoutMs) {
   const sid = spec && spec.sid;
   let first;
@@ -205,6 +216,22 @@ async function relayRequest(env, relays, spec, timeoutMs) {
           await sleep(150);
           continue;
         }
+        // فشل بنية تحتية على هذا الريلاي (حجب HTML، خطأ Cloudflare 520-526، أو
+        // انقطاع): نجرّب ريلاياً آخر بدل إنهاء الطلب. سابقاً كان هذا الرد
+        // يُعاد مباشرةً للمستخدم فتنقسم الجلسة عند أول ريلاي سيّئ.
+        if (isRelayInfrastructureFailure(status, payload.data)) {
+          console.log(`[http] relay ${r.split('/')[2]} infra failure (status=${status}) → try next`);
+          markRejected(r);
+          if (sid && sidRelay.get(sid) === r) sidRelay.delete(sid);
+          await sleep(150);
+          continue;
+        }
+        // ردّ قابل للاستخدام من أوريدو/دجيزي (401 رمز خاطئ، 400 خطأ واضح،
+        // 403 محجوب برمجياً، أو 200 ناجح). نحترمه ولا نجرّب ريلاياً آخر كي
+        // لا نُسرّب رموز زائدة على رقم المستخدم.
+        // إن وصلنا إلى هنا بعد تخطّي ريلاي فاشل، نثبّت الـ sid على هذا الريلاي
+        // الناجح فعلاً حتى يبقى checkpoint+token على نفس الـ IP في الطلب التالي.
+        if (sid) sidRelay.set(sid, r);
         return {
           status,
           data: payload.data,
