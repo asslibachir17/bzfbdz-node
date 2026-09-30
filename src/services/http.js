@@ -2,7 +2,7 @@
 // - Relay: خادم خارجي يعيد توجيه الطلب (IP آخر).
 // - DbProxy: بروكسي HTTP من جدول proxies في D1 عبر نفق Socket (مثل proxyAxios القديم).
 import proxyRequest from './proxy.js';
-import { resolveRelays } from '../config/relays.js';
+import { resolveRelays, isProductionRelayKey } from '../config/relays.js';
 
 function timeoutSignal(timeoutMs) {
   const ctrl = new AbortController();
@@ -42,7 +42,7 @@ export async function httpRequest(env, opts) {
     directFirst = false, // جرّب الاتصال المباشر أولاً (أسرع)، والبروكسي احتياط عند الفشل
   } = opts;
 
-  const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST'], relayKey === 'OOREDOO_RELAY_URL') : null;
+  const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST'], isProductionRelayKey(relayKey)) : null;
 
   let payload = body;
   const hdrs = { ...headers };

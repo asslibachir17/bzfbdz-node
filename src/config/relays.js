@@ -43,6 +43,15 @@ function urlFor(name) {
 // 45 ريلاي: 28 على مناطق نظيفة + 17 احتياط MAD.
 export const DEFAULT_RELAY_URLS = [...CLEAN, ...FALLBACK_MAD].map(urlFor);
 
+// مفاتيح الريلاي الإنتاجية التي تستحق دمج القائمة المدمجة. دجيزي مضاف مع
+// أوريدو: كان DJEZZY_RELAY_URL غير مضبوط في Render، فخرجت طلبات دجيزي مباشرة
+// من IP أمريكا وتُحجب أحياناً. الدمج يمنحها 45 ريلاي تلقائياً بلا تعديل يدوي.
+export const PRODUCTION_RELAY_KEYS = new Set(['OOREDOO_RELAY_URL', 'DJEZZY_RELAY_URL']);
+
+export function isProductionRelayKey(key) {
+  return PRODUCTION_RELAY_KEYS.has(key);
+}
+
 // يدمج متغيّرات البيئة مع القائمة المدمجة. الترتيب مقصود:
 //   1) primary (تثبيت صريح من المستخدم)
 //   2) القائمة المدمجة (النظيفة أولاً حسب القياس الفعلي)
