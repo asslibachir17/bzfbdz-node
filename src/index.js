@@ -344,6 +344,40 @@ export default {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    // ---------- اختبار ريلاي واحد على حدة على رقم حقيقي ----------
+    // body: { phone, only: "<جزء من اسم الريلاي>" } — يقصر الدوران على ريلاي واحد
+    // لقياس أي عنوان خروج يمرّ من حجب أوريدو (الدوران على 9 يخفي النتيجة).
+    if (request.method === 'POST' && url.pathname === '/_diag/relay-solo') {
+      if (!env.DIAG_KEY || request.headers.get('x-diag-key') !== env.DIAG_KEY) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      const body = await request.json().catch(() => ({}));
+      const phone = String(body.phone || '0550000000');
+      const only = String(body.only || '').toLowerCase();
+      const primary = env.OOREDOO_RELAY_URL || '';
+      const list = (env.OOREDOO_RELAY_URL_LIST || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const picked = [primary, ...list].filter((u) => u && (!only || u.toLowerCase().includes(only)));
+      if (!picked.length) return new Response(JSON.stringify({ error: 'no relay matched', only }), { status: 200 });
+      // نضع الريلاي المختار وحده في primary، ونترك الباقي في القائمة لكن مُجمَّداً:
+      // relayList يبني primary + list، لذا نمرّر المختار كـ primary والقائمة فارغة.
+      const soloEnv = { ...env, OOREDOO_RELAY_URL: picked[0], OOREDOO_RELAY_URL_LIST: '' };
+      const { createOoredoo } = await import('./services/ooredoo.js');
+      const t0 = Date.now();
+      let res;
+      try {
+        res = await createOoredoo(soloEnv).sendVerificationCode(phone);
+      } catch (e) {
+        res = { statusCode: 500, data: { message: 'exception: ' + (e && e.message || e) } };
+      }
+      return new Response(JSON.stringify({
+        phone, only: only || '(all)',
+        ok: res && res.statusCode === 200,
+        statusCode: res && res.statusCode,
+        text: String(res && (res.text || (res.data && res.data.message) || '')).slice(0, 200),
+        elapsedMs: Date.now() - t0,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // ---------- اختبار بروكسيات DB لأوريدو مباشرة (بدون relay) ----------
     // يذهب من الخادم إلى بروكسي DB (ooredoo) ثم إلى apis.ooredoo.dz
     // ويرجع الرد الخام — لنرى هل البروكسي يصل فعلاً لأوريدو (عنوان DZ) أم ميت.
