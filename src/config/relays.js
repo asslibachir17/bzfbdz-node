@@ -52,9 +52,17 @@ export const DEFAULT_RELAY_URLS = [...CLEAN, ...FALLBACK_MAD].map(urlFor);
 export function resolveRelays(primaryUrl, envList, withDefaults = true) {
   const out = [];
   const seen = new Set();
+  // تطبيع: إزالة الفراغات والشرطة المائلة الأخيرة، وإضافة https:// إن غاب
+  // المخطط. سبب ذلك: قائمة Render ضبطت primary كاسم مضيف بلا https:// فحُسب
+  // رابطاً منفصلاً عن المدمج (كان relayCount=46 بدل 45).
+  const norm = (v) => {
+    let s = String(v).trim().replace(/\/+$/, '');
+    if (s && !/^https?:\/\//i.test(s)) s = 'https://' + s;
+    return s;
+  };
   const push = (v) => {
     if (!v) return;
-    const u = String(v).trim();
+    const u = norm(v);
     if (!u || seen.has(u)) return;
     seen.add(u);
     out.push(u);
