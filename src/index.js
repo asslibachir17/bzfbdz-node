@@ -227,13 +227,31 @@ export default {
     // ---------- فحص صحي (اختياري للمراقبة) ----------
     if (request.method === 'GET' && url.pathname === '/health') {
       const dbBackend = env.DB?.backend || 'none';
+      // فحوص الإعداد: أسماء المتغيّرات الناقصة فقط، بلا أي قيمة.
+      // الغرض: كشف حالة "بوت حيّ لا يفعل شيئاً" بدقّة عند أول خطأ فيضبط.
+      const required = [
+        'DATABASE_URL', 'PAGE_ACCESS_TOKEN', 'VERIFY_TOKEN', 'RELAY_SECRET',
+        'OOREDOO_CLIENT_ID', 'OOREDOO_RELAY_URL', 'DJEZZY_CLIENT_ID', 'DJEZZY_CLIENT_SECRET',
+        'TG_BOT_TOKEN',
+      ];
+      const missing = required.filter((k) => !env[k] || !String(env[k]).trim());
+      const fp = String(env.OOREDOO_FORCE_DBPROXY || '').trim().toLowerCase();
       const data = {
         ok: true,
         db: dbBackend,
         hasDatabaseUrl: /^postgres(ql)?:\/\//i.test(env.DATABASE_URL || ''),
         git: process.env.RENDER_GIT_COMMIT || env.RENDER_GIT_COMMIT || null,
         deployedAt: new Date().toISOString(),
+        // تشخيص الإعداد: لا تُطبع أي قيمة سرّية، فقط الأسماء والطول.
+        cfg: {
+          missing,
+          relayCount: 1 + String(env.OOREDOO_RELAY_URL_LIST || '').split(',').filter((s) => s.trim()).length,
+          // نفس تحليل envFlag: النص "false" يجب ألا يُعتبر true.
+          forceDbProxy: !(fp === '' || fp === 'false' || fp === '0' || fp === 'no' || fp === 'off'),
+          tokenLen: String(env.PAGE_ACCESS_TOKEN || '').length,
+        },
       };
+      if (missing.length) console.error('[health] MISSING ENV:', missing.join(', '));
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
