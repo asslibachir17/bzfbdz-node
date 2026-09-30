@@ -149,7 +149,9 @@ function markRejected(relayUrl) {
 
 function isOoredooRejected(data) {
   if (!data || typeof data !== 'string') return false;
-  return /Request Rejected/i.test(data) && /<html/i.test(data);
+  if (!/Request Rejected/i.test(data)) return false;
+  // صفحة الحجب HTML، لكن قد يعيد Cloudflare الحجب كنص عادي أو JSON.
+  return /<html|<!doctype/i.test(data) || data.trim().length < 2000;
 }
 
 // ريلاي أخفق مؤقتاً بسبب بنية تحتية أو حجر upstream: HTML حجب، خطأ Cloudflare
@@ -208,8 +210,10 @@ async function relayRequest(env, relays, spec, timeoutMs) {
       }
       if (payload && typeof payload === 'object' && 'status' in payload) {
         const status = Number(payload.status) || res.status;
-        // أوريدو ترفض أحياناً الـ IP المزدحم بـ HTML «Request Rejected» (حماية ضد التردد)
-        if (status === 200 && isOoredooRejected(payload.data)) {
+        // أوريدو ترفض أحياناً الـ IP المزدحم بـ HTML «Request Rejected» (حماية ضد التردد).
+        // يردّ الحجب أحياناً بـ 200 وأحياناً بـ 403/429 — سابقاً كنا نفحص 200 فقط،
+        // فكان 403 يُعتبر «رداً نهائياً» ويتوقف الدوران عند أول ريلاي.
+        if (isOoredooRejected(payload.data)) {
           console.log(`[http] relay ${r.split('/')[2]} rejected by ooredoo → try next`);
           markRejected(r);
           if (sid && sidRelay.get(sid) === r) sidRelay.delete(sid);
