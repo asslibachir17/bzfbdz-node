@@ -1,7 +1,12 @@
 # ============================================================
 # BZFBDZ-node — Render Blueprint
-# يُنشئ خدمة ويب + قاعدة PostgreSQL مجانية، ويربط DATABASE_URL تلقائياً.
 # المسارات: /webhook (فيسبوك)، /tg/webhook (تلغرام)، /ig/webhook (انستغرام)
+#
+# ⚠️ كل الأسرار هنا `sync: false` = تُضبط من لوحة Render فقط ولا تُرفع للمستودع.
+#    سبب التغيير: كانت أسرار Djezzy مكتوبة هنا نصّياً، ونسخة منها في تاريخ Git.
+#
+# ⚠️ لا ينشئ هذا الملف قاعدة بيانات: الإنتاج يستخدم قاعدة bzfbdz_node الحالية،
+#    وتُضبط DATABASE_URL من لوحة Render (سلسلة الاتصال الداخلية).
 # ============================================================
 services:
   - type: web
@@ -11,30 +16,57 @@ services:
     buildCommand: npm install
     startCommand: npm start
     autoDeploy: true
+    healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
         value: 20.11.0
+
+      # ---------- الاتصال بالقاعدة (إلزامي) ----------
+      # سلسلة الاتصال الداخلية لقاعدة bzfbdz_node الحالية.
+      # ⚠️ كلمة المرور هنا كانت مسرّبة في تاريخ Git عبر seed_proxies.cjs
+      #    => يجب تدويرها في Render قبل الإنتاج، ثم وضع القيمة الجديدة هنا.
       - key: DATABASE_URL
-        fromDatabase:
-          name: bzfbdz-db
-          property: connectionString
+        sync: false
+
+      # ---------- رموز الوصول (إلزامية) ----------
+      - key: PAGE_ACCESS_TOKEN
+        sync: false
+      - key: PAGE_APP_SECRET
+        sync: false
       - key: VERIFY_TOKEN
-        value: 123123123
+        sync: false
+      - key: TG_BOT_TOKEN
+        sync: false
+      - key: IG_PAGE_ACCESS_TOKEN
+        sync: false
+      - key: IG_PAGE_ID
+        sync: false
+      - key: IG_APP_SECRET
         sync: false
       - key: DIAG_KEY
         sync: false
-      - key: X_SIGNATURE
-        value: 634efc7e419e3f5797ec445e29176c525cee4bfc17de0a8f4c399da5a3628ac1
+
+      # ---------- دجيزي ----------
       - key: DJEZZY_CLIENT_ID
-        value: 6E6CwTkp8H1CyQxraPmcEJPQ7xka
+        sync: false
       - key: DJEZZY_CLIENT_SECRET
-        value: MVpXHW_ImuMsxKIwrJpoVVMHjRsa
+        sync: false
       - key: DJEZZY_CLIENT_ID_V2
-        value: 87pIExRhxBb3_wGsA5eSEfyATloa
+        sync: false
       - key: DJEZZY_CLIENT_SECRET_V2
-        value: uf82p68Bgisp8Yg1Uz8Pf6_v1XYa
+        sync: false
+      - key: API_BASE_URL_DJEZZY
+        value: https://apim.djezzy.dz
+
+      # ---------- أوريدو ----------
+      - key: OOREDOO_CLIENT_ID
+        sync: false
       - key: API_BASE_URL_OOREDOO
         value: https://apis.ooredoo.dz
+      - key: X_SIGNATURE
+        value: 634efc7e419e3f5797ec445e29176c525cee4bfc17de0a8f4c399da5a3628ac1
+      - key: OOREDOO_INSTANCE_ID
+        value: 7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c
       - key: OOREDOO_MODERN_PLANS
         value: "N'YOOZ,DIMA,682,654,736"
       - key: OOREDOO_SNAPCHAT_PLANS
@@ -43,13 +75,25 @@ services:
         value: "N'YOOZ,682,736"
       - key: OOREDOO_GIFT_COOLDOWN_HOURS
         value: "24"
-      # ضغط OTP فقط: تزامن محدود لاستدعاءات دجيزي/أوريدو الخارجية (لا طابور ويب هوك)
+
+      # ---------- الريلايس (مسار أوريدو المعتمد: يخرج من Cloudflare وغير محجوب) ----------
+      # ⚠️ Render من إionesي/أمريكا: طلبات أوريدو المباشرة محجوبة جغرافياً.
+      #    لذلك مسار أوريدو كله يمر عبر الريلايس. لا تُفرغ هذه القيم.
+      - key: OOREDOO_RELAY_URL
+        value: https://oo-relay.asslibachiir.workers.dev
+      - key: OOREDOO_RELAY_URL_LIST
+        value: "https://oo-relay-2.asslibachiir.workers.dev,https://oo-relay-3.asslibachiir.workers.dev,https://oo-relay-4.asslibachiir.workers.dev,https://oo-relay-alt.asslimstph.workers.dev,https://oo-relay-alt-2.asslimstph.workers.dev,https://oo-relay-5.asslibachiir.workers.dev,https://oo-relay-6.asslibachiir.workers.dev,https://oo-relay-7.asslibachiir.workers.dev"
+      # فارغ = دجيزي بلا ريلاي (يعتمد على جدول proxies). فعّله لاحقاً إن نُشر ريلاي له.
+      - key: DJEZZY_RELAY_URL
+        value: ""
+      - key: RELAY_SECRET
+        sync: false
+      # يجب أن يكون false أو فارغاً. انتبه: "false" كنص كان يُفعّل الإجبار في الكود.
+      - key: OOREDOO_FORCE_DBPROXY
+        value: "false"
+
+      # ---------- ضغط الحمل ----------
       - key: LOAD_MAX_CONCURRENCY
         value: "8"
       - key: LOAD_QUEUE_TTL_MS
         value: "12000"
-
-databases:
-  - name: bzfbdz-db
-    plan: free
-    databaseName: bzfbdz

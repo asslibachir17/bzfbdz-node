@@ -1,33 +1,96 @@
+// ============================================================================
+// سكربت زرع البروكسيات في جدول proxies
+//
+// ⚠️  تنبيه أمني: هذا الملف كان يحتوي على كلمة مرور PostgreSQL الحيّة
+//     وخمس كلمات مرور بروكسي مدفوعة مكتوبة مباشرةً، وكان مُرفعاً على
+//     مستودع GitHub عام. تم حذف كل الأسرار من هنا نهائياً.
+//     كل القيم تُقرأ الآن من متغيرات البيئة:
+//       DATABASE_URL  — سلسلة اتصال PostgreSQL (إلزامية)
+//       PROXIES_JSON  — مصفوفة JSON بالبروكسيات (إلزامية)
+//
+//     مثال لـ PROXIES_JSON:
+//     [{"host":"example.com","port":5000,"username":"u","password":"p","service":"ooredoo"}]
+//
+//     التشغيل:  node seed_proxies.cjs
+//     (يجب ضبط المتغيرين في البيئة أو في .env داخل نفس المجلد)
+// ============================================================================
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
-const pool = new Pool({
-  host: 'dpg-dar7ntnavr4c7383eepg-a.oregon-postgres.render.com',
-  port: 5432,
-  database: 'bzfbdz_node',
-  user: 'bzfbdz_node_user',
-  password: 'WluScHr37xlFybtz21uFlYaZV36DR3tR',
-  ssl: { rejectUnauthorized: false },
-});
 
-const rows = [
-  { id: 1, host: 'v2.proxyempire.io', port: 5000, username: 'r_ff45693e44-country-dz', password: '970fb1c855', active: 1, last_used: '2026-09-24T09:11:02.596Z', service: 'ooredoo', blocked_until: 0 },
-  { id: 2, host: 'gw.dataimpulse.com', port: 823, username: 'b60f40fc7fc058f21a2a__cr.dz', password: '3f3da8c474e52c99', active: 1, last_used: '2026-09-22T20:57:43.542Z', service: 'djezzy', blocked_until: 1790305486556 },
-  { id: 3, host: 'eu.911proxy.net', port: 2600, username: 'mm7ajxh2mlie_area-DZ', password: 'TUp8hNaN3VriDofu', active: 1, last_used: '2026-08-13T20:45:08.585Z', service: 'ooredoo', blocked_until: 1790241361482 },
-  { id: 4, host: 'node-de-35.astroproxy.com', port: 10042, username: 'AsslibachirvI1', password: 'ef59c6xN7', active: 1, last_used: '2026-09-09T11:20:42.361Z', service: 'djezzy', blocked_until: 1790305486100 },
-  { id: 5, host: 'change6.owlproxy.com', port: 7778, username: 'ZGuhzCqDNn10_custom_zone_DZ_st__city_sid_25360531_time_5', password: '5523206', active: 1, last_used: '2026-09-25T04:18:36.794Z', service: 'djezzy', blocked_until: 0 },
-];
+// تحميل .env اختيارياً حتى لا نحتاج ضبط متغيرات النظام يدوياً
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  for (const rawLine of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const k = line.slice(0, eq).trim();
+    let v = line.slice(eq + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (process.env[k] === undefined) process.env[k] = v;
+  }
+}
+
+const connectionString = (process.env.DATABASE_URL || '').trim();
+if (!connectionString) {
+  console.error('ERR: متغير البيئة DATABASE_URL غير معرّف. لا يوجد أي سرّ افتراضي في هذا الملف عن قصد.');
+  process.exit(1);
+}
+
+let rows;
+try {
+  rows = JSON.parse(process.env.PROXIES_JSON || '[]');
+} catch (e) {
+  console.error('ERR: PROXIES_JSON ليس JSON صالحاً:', e.message);
+  process.exit(1);
+}
+if (!Array.isArray(rows) || !rows.length) {
+  console.error('ERR: متغير البيئة PROXIES_JSON فارغ أو ليس مصفوفة. لا يوجد أي سرّ افتراضي في هذا الملف عن قصد.');
+  process.exit(1);
+}
+
+// لا نطبع كلمات المرور أبداً في السجل
+const mask = (s) => (s ? `${String(s).slice(0, 2)}***` : '');
+
+const pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false } });
 
 async function main() {
-  for (const r of rows) {
-    const res = await pool.query(
-      `INSERT INTO proxies (id, host, port, username, password, active, last_used, service, blocked_until)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (id) DO UPDATE SET host=EXCLUDED.host, port=EXCLUDED.port, username=EXCLUDED.username, password=EXCLUDED.password, active=EXCLUDED.active, last_used=EXCLUDED.last_used, service=EXCLUDED.service, blocked_until=EXCLUDED.blocked_until`,
-      [r.id, r.host, r.port, r.username, r.password, r.active, r.last_used, r.service, r.blocked_until]
-    );
-    console.log(`proxy ${r.id} (${r.host}) rowCount=${res.rowCount}`);
+  // ملاحظة: جدول proxies فيه id BIGSERIAL بلا قيد UNIQUE على host،
+  // فاستخدام ON CONFLICT (id) دون تحديد id يُنتج تكراراً عند كل تشغيل.
+  // لذلك نحذف الصف السابق لنفس (host, service) ثم نُدرج، داخل معاملة واحدة:
+  // هذا يجعل الزرع آمناً للتكرار (idempotent) وبلا حاجة إلى معرفة الـ ids.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const r of rows) {
+      for (const f of ['host', 'port', 'username', 'password', 'service']) {
+        if (r[f] === undefined || r[f] === null || r[f] === '') {
+          throw new Error(`حقل "${f}" مفقود في أحد العناصر`);
+        }
+      }
+      await client.query('DELETE FROM proxies WHERE host = $1 AND service = $2', [r.host, r.service]);
+      const res = await client.query(
+        `INSERT INTO proxies (host, port, username, password, active, last_used, service, blocked_until)
+         VALUES ($1,$2,$3,$4,$5,to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),$6,$7)`,
+        [r.host, r.port, r.username, r.password, r.active === 0 ? 0 : 1, r.service, Number(r.blocked_until) || 0]
+      );
+      console.log(`proxy ${r.host} (${r.service}) user=${r.username} pass=${mask(r.password)} rowCount=${res.rowCount}`);
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
   }
-  const chk = await pool.query('SELECT id, host, service, blocked_until FROM proxies ORDER BY id');
+  const chk = await pool.query('SELECT id, host, service, active, blocked_until FROM proxies ORDER BY id');
   console.log('FINAL:', JSON.stringify(chk.rows));
   await pool.end();
 }
-main().catch((e) => { console.error('ERR', e.message); process.exit(1); });
+
+main().catch((e) => {
+  console.error('ERR', e.message || e);
+  process.exit(1);
+});

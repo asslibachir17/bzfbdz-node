@@ -4,3 +4,8 @@ data/
 *.log
 _migrate_from_d1.cjs
 _t.*
+
+# بيانات الاتصال والأسرار — لا تُرفع أبداً
+seed_proxies.env.local
+*.env.local
+

@@ -25,8 +25,13 @@ export function createDjezzy(env) {
   const base = env.API_BASE_URL_DJEZZY || 'https://apim.djezzy.dz';
   const clientId = env.DJEZZY_CLIENT_ID;
   const clientSecret = env.DJEZZY_CLIENT_SECRET;
-  const clientIdV2 = env.DJEZZY_CLIENT_ID_V2 || '87pIExRhxBb3_wGsA5eSEfyATloa';
-  const clientSecretV2 = env.DJEZZY_CLIENT_SECRET_V2 || 'uf82p68Bgisp8Yg1Uz8Pf6_v1XYa';
+  const clientIdV2 = env.DJEZZY_CLIENT_ID_V2 || '';
+  const clientSecretV2 = env.DJEZZY_CLIENT_SECRET_V2 || '';
+  // أسرار OAuth لـ Djezzy كانت مكتوبة هنا كقيم افتراضية. حُذفت عمداً:
+  // النسخة الاحتياطية منها في تاريخ Git، ويجب تدويرها لدى المزوّد.
+  if (!clientId || !clientSecret) {
+    console.error('[djezzy] DJEZZY_CLIENT_ID / DJEZZY_CLIENT_SECRET غير معرّفين — كل عمليات OTP لدجيزي ست��شل. عيّنهما في البيئة.');
+  }
 
   function form(obj) {
     return Object.entries(obj)

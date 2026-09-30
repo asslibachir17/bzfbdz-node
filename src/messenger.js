@@ -9,22 +9,42 @@ async function throttleSend(senderPsid, minGapMs = 350) {
 }
 
 export function createMessenger(env) {
-  const token = env.PAGE_ACCESS_TOKEN || 'EAANgiDeZCIlsBSmdw7LpMJPN699iB80GWyeCyIhgyZAzx22XCtAH4NWLk7ET89eEFmYuqFfrB9pDrEdErPxaeROXbtAILzvMZBDoZAVcCBLxmTqlSYCfWnLy8NS5IG3uDZB2Pn1eJNO2ZA5x72dxZAiZAMXBmRMaHSwHyomkwSYZAVcUSG9OQvvGqRrQQ4XvVqkPWcYZA7cpbay4KiZCTIZBXn5rTgZDZD';
+  // توكن صفحة فيسبوك كان مُضمَّناً هنا كنص صريح. حُذف عمداً:
+  // النسخة الاحتياطية منه في تاريخ Git، ويجب إصدار توكن جديد.
+  const token = env.PAGE_ACCESS_TOKEN || '';
+  if (!token) {
+    // لا نُسقط العملية: نُبقيها تعمل مع تنبيه صريح، لأن غياب التوكن
+    // كان سابقاً يُنتج "بوت حيّ لا يُرسل شيئاً" بصمت.
+    console.error('[FB] PAGE_ACCESS_TOKEN غير معرّف — كل الرسائل إلى فيسبوك ستُسقط بصمت. عيّنه في البيئة (وليس في الكود).');
+  }
   const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${encodeURIComponent(token)}`;
 
-  // تنظيف quick_replies: إزالة الحقول غير المدعومة من Facebook Send API (full_row, url, إلخ)
+  // تنظيف quick_replies: إزالة الحقول غير المدعومة من Facebook Send API (full_row, url، إلخ)
   function sanitizeResponse(response) {
-    if (!response || !Array.isArray(response.quick_replies) || !response.quick_replies.length) {
-      return response;
+    if (!response) return response;
+    if (!Array.isArray(response.quick_replies) || !response.quick_replies.length) {
+      // Facebook لا يقبل مصفوفة فارغة: يرفضها بخطأ #194
+      // "(#194) param message[quick_replies] has too few elements".
+      // لذلك نحذف الحقل كلياً بدل إرساله فارغاً.
+      if (!('quick_replies' in response)) return response;
+      const { quick_replies: _drop, ...rest } = response;
+      return rest;
     }
-    const quick_replies = response.quick_replies.map((q) => {
-      const clean = {};
-      if (q.content_type) clean.content_type = q.content_type;
-      if (q.title !== undefined) clean.title = q.title;
-      if (q.payload !== undefined) clean.payload = q.payload;
-      if (q.image_url) clean.image_url = q.image_url;
-      return clean;
-    });
+    const quick_replies = response.quick_replies
+      .map((q) => {
+        const clean = {};
+        if (q.content_type) clean.content_type = q.content_type;
+        if (q.title !== undefined) clean.title = q.title;
+        if (q.payload !== undefined) clean.payload = q.payload;
+        if (q.image_url) clean.image_url = q.image_url;
+        return clean;
+      })
+      // لا نُبقي عنصراً فارغاً: قد يسبّب نفس خطأ #194
+      .filter((q) => Object.keys(q).length > 0);
+    if (!quick_replies.length) {
+      const { quick_replies: _drop, ...rest } = response;
+      return rest;
+    }
     return { ...response, quick_replies };
   }
 
