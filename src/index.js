@@ -280,7 +280,7 @@ export default {
         try {
           const r = await fetch(u + '/ip', { signal: AbortSignal.timeout(20000) });
           const j = await r.json().catch(() => null);
-          out = { url: u, ok: r.ok, status: r.status, asn: (j && j.asn) || null };
+          out = { url: u, ok: r.ok, status: r.status, asn: (j && j.asn) || null, colo: (j && j.colo) || null, country: (j && j.country) || null };
         } catch (e) {
           out = { url: u, ok: false, error: (e && e.message) || String(e) };
         }
