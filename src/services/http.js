@@ -2,6 +2,7 @@
 // - Relay: خادم خارجي يعيد توجيه الطلب (IP آخر).
 // - DbProxy: بروكسي HTTP من جدول proxies في D1 عبر نفق Socket (مثل proxyAxios القديم).
 import proxyRequest from './proxy.js';
+import { resolveRelays } from '../config/relays.js';
 
 function timeoutSignal(timeoutMs) {
   const ctrl = new AbortController();
@@ -117,34 +118,80 @@ export async function httpRequest(env, opts) {
 let relayCursor = 0;
 let rejectedCursor = new Map(); // relayUrl -> expiry (ms) لتجميد الـ relay المرفوض مؤقتاً
 const sidRelay = new Map(); // sid -> relayUrl: تثبيت مصدر الخروج لكل تدفق (checkpoint+token من نفس IP)
+// سجلّ أداء لكل ريلاي: يُستخدم لزيادة التجميد تدرّجياً وتفضيل الناجين.
+// مع 45 ريلاي على 11 منطقة، الحجب يصيب منطقة كاملة دفعةً واحدة، فالثبات
+// (60ث للجميع) يعيد محاولةِ ريلايس ميتة ويضيع طلبات على عناوين محجوبة.
+const relayScore = new Map(); // relayUrl -> { ok, fail, backoffMs }
+const RELAY_BACKOFF_MIN = 45000;
+const RELAY_BACKOFF_MAX = 15 * 60 * 1000;
+const RELAY_BACKOFF_STEP = 30000;
 
+function relayStat(relayUrl) {
+  let s = relayScore.get(relayUrl);
+  if (!s) { s = { ok: 0, fail: 0, backoffMs: RELAY_BACKOFF_MIN }; relayScore.set(relayUrl, s); }
+  return s;
+}
+
+// متغيّرات البيئة أولاً (تثبيت يدوي من Dashboard)، ثم القائمة المدمجة في
+// src/config/relays.js التي ضمّت التوسعة إلى 45. الدمج يجعل النشر وحده
+// كافياً لتفعيل الشبكة كاملة، لأن render.yaml لا يُطبَّق على متغيّرات مستقلة.
 function relayList(primary, extra) {
-  const all = [];
-  if (primary) all.push(primary);
-  if (extra) for (const s of String(extra).split(',')) {
-    const v = s.trim();
-    if (v) all.push(v);
+  return resolveRelays(primary, extra);
+}
+
+// ترتيب بالترجيح: الأقل تجميداً أولاً، وعند التساوي الأقل فشلاً، ثم round-robin.
+// هذا يجعل الريلايس الناجحة تُختار أولاً بدل الاعتماد على موضعها في القائمة.
+function pickRelay(relays, now) {
+  const live = [];
+  const frozen = [];
+  for (const u of relays) {
+    const cd = rejectedCursor.get(u);
+    if (!cd || cd <= now) live.push(u); else frozen.push({ u, cd });
   }
-  return all;
+  if (!live.length) return null;
+  live.sort((a, b) => {
+    const sa = relayStat(a), sb = relayStat(b);
+    if (sa.ok !== sb.ok) return sb.ok - sa.ok;          // الناجح أولاً
+    if (sa.fail !== sb.fail) return sa.fail - sb.fail;  // الأقل فشلاً
+    return 0;                                          // ثم ترتيب القائمة
+  });
+  // round-robin داخل المجموعة الأفضل: يتناوب بينها بعدلUsage عادل
+  const top = live.filter((u) => relayStat(u).ok === relayStat(live[0]).ok && relayStat(u).fail === relayStat(live[0]).fail);
+  relayCursor = (relayCursor + 1) % top.length;
+  return top[relayCursor];
 }
 
 function nextRelay(relays) {
   const now = Date.now();
-  for (let i = 0; i < relays.length; i++) {
-    relayCursor = (relayCursor + 1) % relays.length;
-    const u = relays[relayCursor];
-    const cooldown = rejectedCursor.get(u);
-    if (!cooldown || cooldown <= now) return { relay: u, all: false };
+  const best = pickRelay(relays, now);
+  if (best) return { relay: best, all: false };
+  // الكل مجمّد → نعيد أقل مدة تجميد (سيُجرَّب بعد انتهائها) بدل الأول عشوائياً
+  let soonest = null, soonestAt = Infinity;
+  for (const [u, cd] of rejectedCursor) {
+    if (!relays.includes(u)) continue;
+    if (cd < soonestAt) { soonestAt = cd; soonest = u; }
   }
-  // الكل مرفوض حالياً → نعيد الأول (سيجرب من جديد بعد انتهاء تهدئة)
-  rejectedCursor.clear();
-  return { relay: relays[0], all: true };
+  return { relay: soonest || relays[0], all: true };
 }
 
 function markRejected(relayUrl) {
-  // تجميد أطول (60 ثانية) لأن عنوان الخروج الواحد يعاني «صومعة التردد»
-  // من أوريدو بعد رفض حقيقي، والانتقال الفوري يزيد الضغط على العنوان التالي.
-  rejectedCursor.set(relayUrl, Date.now() + 60000);
+  // تدرّج: كل فشل متتالٍ يزيد مدة التجميد (45ث ← 15د). الحجب عند أوريدو
+  // يتراكم على عنوان الخروج، فريلايس محجوب تماماً لا يُفيد محاولته بعد 45ث.
+  const s = relayStat(relayUrl);
+  s.fail++;
+  s.ok = 0;
+  s.backoffMs = Math.min(RELAY_BACKOFF_MAX, s.backoffMs + RELAY_BACKOFF_STEP);
+  rejectedCursor.set(relayUrl, Date.now() + s.backoffMs);
+}
+
+// تُستدعى عند ردّ صالح من الريلايس (200 أو حتى 401/403 حقيقي) ليعود تدريجياً
+// إلى قائمة الترجيح unwell-known بعد نجاح وحيد.
+function markRelayOk(relayUrl) {
+  const s = relayStat(relayUrl);
+  s.ok++;
+  s.fail = 0;
+  s.backoffMs = RELAY_BACKOFF_MIN;
+  rejectedCursor.delete(relayUrl);
 }
 
 function isOoredooRejected(data) {
@@ -173,9 +220,12 @@ async function relayRequest(env, relays, spec, timeoutMs) {
   if (sid && sidRelay.has(sid) && relays.includes(sidRelay.get(sid))) {
     first = sidRelay.get(sid);
     if (!rejectedCursor.get(first) || rejectedCursor.get(first) <= Date.now()) {
-      relayCursor = relays.indexOf(first);
+      // نثبّت sid على هذا الريلاي مباشرةً. لا نلمس relayCursor هنا لأن pickRelay
+      // يعمل على قائمة المرشّحين المرتّبة لا على relays — تعديله كان يتخطّى ريلايس.
+      relayStat(first).ok++;
     } else {
-      first = null;
+      first = null; // مثبَّت لكنه مجمّد (حُجب) → نترك الاختيار الحر يختار غيره
+      if (sid) sidRelay.delete(sid);
     }
   }
   if (!first) {
@@ -236,6 +286,7 @@ async function relayRequest(env, relays, spec, timeoutMs) {
         // إن وصلنا إلى هنا بعد تخطّي ريلاي فاشل، نثبّت الـ sid على هذا الريلاي
         // الناجح فعلاً حتى يبقى checkpoint+token على نفس الـ IP في الطلب التالي.
         if (sid) sidRelay.set(sid, r);
+        markRelayOk(r);
         return {
           status,
           data: payload.data,
