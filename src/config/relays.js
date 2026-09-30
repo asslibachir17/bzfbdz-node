@@ -43,10 +43,13 @@ function urlFor(name) {
 // 45 ريلاي: 28 على مناطق نظيفة + 17 احتياط MAD.
 export const DEFAULT_RELAY_URLS = [...CLEAN, ...FALLBACK_MAD].map(urlFor);
 
-// مفاتيح الريلاي الإنتاجية التي تستحق دمج القائمة المدمجة. دجيزي مضاف مع
-// أوريدو: كان DJEZZY_RELAY_URL غير مضبوط في Render، فخرجت طلبات دجيزي مباشرة
-// من IP أمريكا وتُحجب أحياناً. الدمج يمنحها 45 ريلاي تلقائياً بلا تعديل يدوي.
-export const PRODUCTION_RELAY_KEYS = new Set(['OOREDOO_RELAY_URL', 'DJEZZY_RELAY_URL']);
+// مفاتيح الريلاي الإنتاجية التي تستحق دمج القائمة المدمجة.
+// أوريدو فقط: شبكة Cloudflare تُخرِج طلبات أوريدو من IP مقبول لديها.
+//
+// جُرِّب دجيزي (DJEZZY_RELAY_URL) وثبت أنه يضرّ: دجيزي يحجب كل عناوين
+// Cloudflare (nginx 403) — حتى GET لجذر apim.djezzy.dz عبر أي ريلاي يعود
+// 403. لذلك لا يُدمج لدجيزي، ويُترك لمسار البروكسي/المباشر.
+export const PRODUCTION_RELAY_KEYS = new Set(['OOREDOO_RELAY_URL']);
 
 export function isProductionRelayKey(key) {
   return PRODUCTION_RELAY_KEYS.has(key);
