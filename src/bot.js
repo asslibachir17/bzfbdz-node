@@ -1488,7 +1488,7 @@ ${msg}` : ""}`,
       return { text: `❌ ${errMsg2}
 رقمك: ${mask}`, quick_replies: back };
     } catch (e) {
-      console.error("[باقة 4Go] خطأ:", e.message);
+      console.error("[عرض 4Go] خطأ:", e.message);
       return { text: `❌ حدث خطأ أثناء محاولة التفعيل ⚠️
 رقمك: ${mask}`, quick_replies: back };
     } finally {
@@ -1855,7 +1855,7 @@ ${msg}` : ""}`,
     const hybrid = data.hybridAllocations?.hybridBundleAllocations;
     if (Array.isArray(hybrid)) {
       for (const hb of hybrid) {
-        const hbName = hb.bundleName || "باقة";
+        const hbName = hb.bundleName || "عرض";
         const hbExp = hb.bearingDetails ? null : expiry(hb.expiryDate || hb.expireDate);
         lines.push(`🔸 ${hbName}`);
         if (Array.isArray(hb.bundleAllocations)) {
@@ -1909,7 +1909,7 @@ ${msg}` : ""}`,
       ...data.weeklyBundlePurchases?.weeklyExclusiveBundles || []
     ];
     for (const b of bundleLists) {
-      const name = b.bundleName || b.allocationName || b.name || "باقة";
+      const name = b.bundleName || b.allocationName || b.name || "عرض";
       const exp = expiry(b.expiryDate || b.expirationDate || b.expireDate);
       lines.push(`🔸 ${name}`);
       const acct = b.account || b;
@@ -2098,14 +2098,12 @@ ${lines.join("\n").trim()}`;
     if (!ownership.ok)
       return ownership.fbResponse;
     return {
-      text: `⚠️ تأكيد الاشتراك:
-
-📦 الباقة: ${name}
+      text: `✅ العرض: ${name}
+📱 رقمك: ${formatPhoneNumber(phoneNumber)}
 💵 السعر: ${priceLine}
-📱 الرقم: ${formatPhoneNumber(phoneNumber)}
 💳 يُخصم المبلغ من رصيدك مباشرة.
 
-هل تريد المتابعة؟`,
+هل تريد التفعيل الآن؟`,
       quick_replies: [
         { content_type: "text", title: "✅ نعم، فعّل", payload: `obyopconfirm:${phoneNumber}:${operator}:${code}` },
         ...backQR(phoneNumber, operator)
@@ -2141,22 +2139,22 @@ ${lines.join("\n").trim()}`;
     }
     if (result.statusCode === 200 || result.statusCode === 201) {
       await setCooldown(env, `bot:obyopconfirm:${sender}:${phoneNumber}`, 6e4);
-      return withFbButton({ text: `✅ تم تفعيل باقة ${name} بنجاح!
+      return withFbButton({ text: `✅ تم تفعيل عرض ${name} بنجاح!
 📱 الرقم: ${formatPhoneNumber(phoneNumber)}`, quick_replies: back }, platform);
     }
     if (result.statusCode === 409 && result.data?.message) {
       const msg = String(result.data.message);
       if (msg.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH")) {
-        return { text: `⛔ رصيدك غير كافٍ لتفعيل باقة ${name}.
+        return { text: `⛔ رصيدك غير كافٍ لتفعيل عرض ${name}.
 اشحن رصيدك ثم أعد المحاولة.`, quick_replies: back };
       }
-      return { text: `⚠️ لم يتم تفعيل الباقة: ${msg}`, quick_replies: back };
+      return { text: `⚠️ لم يتم تفعيل العرض: ${msg}`, quick_replies: back };
     }
     if (result.statusCode === 401) {
       await sendVerificationCode(sender, phoneNumber, session);
       return null;
     }
-    return { text: "⚠️ فشل تفعيل الباقة، يرجى المحاولة لاحقًا.", quick_replies: back };
+    return { text: "⚠️ فشل تفعيل العرض، يرجى المحاولة لاحقًا.", quick_replies: back };
   }
   // ---------- عروض حصرية / عروض وفاء (CVM) ----------
   function parseCvmBundles(data) {
@@ -2301,24 +2299,24 @@ const val = aa["usage-value"] != null ? String(aa["usage-value"]) : null;
     }
     if (result.statusCode === 200 || result.statusCode === 201) {
       await setCooldown(env, `bot:odynconfirm:${sender}:${phoneNumber}`, 6e4);
-      return withFbButton({ text: `✅ تم تفعيل الباقة بنجاح!
-📦 الباقة: ${bundleCode}
+      return withFbButton({ text: `✅ تم تفعيل العرض بنجاح!
+📦 العرض: ${bundleCode}
 📱 الرقم: ${formatPhoneNumber(phoneNumber)}`, quick_replies: back }, platform);
     }
     if (result.statusCode === 409 && (result.data?.message || result.data?.code)) {
       const msg = String(result.data.message || "");
       const codeErr = String(result.data.code || "");
       if (msg.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH") || codeErr.includes("DYNAMIC_CREDIT_LIMIT_NOT_ENOUGH") || msg.includes("Credit Balance Not Enough")) {
-        return { text: `⛔ رصيدك غير كافٍ لتفعيل هذه الباقة.
+        return { text: `⛔ رصيدك غير كافٍ لتفعيل هذا العرض.
 اشحن رصيدك ثم أعد المحاولة.`, quick_replies: back };
       }
-      return { text: `⚠️ لم يتم تفعيل الباقة: ${msg}`, quick_replies: back };
+      return { text: `⚠️ لم يتم تفعيل العرض: ${msg}`, quick_replies: back };
     }
     if (result.statusCode === 401) {
       await sendVerificationCode(sender, phoneNumber, session);
       return null;
     }
-    return { text: "⚠️ فشل تفعيل الباقة، يرجى المحاولة لاحقًا.", quick_replies: back };
+    return { text: "⚠️ فشل تفعيل العرض، يرجى المحاولة لاحقًا.", quick_replies: back };
   }
   return {
     floodGate,

@@ -98,11 +98,15 @@ export function createOoredoo(env) {
   const instanceId = env.OOREDOO_INSTANCE_ID || '7f1d9e3c5a6b8f2e4d1c9a7b3e5f8d2c';
   const byopValidity = env.OOREDOO_BYOP_VALIDITY || 'Biweekly';
 
-  const BYOP_CODES = ['IG', 'YT', 'WA', 'FB', env.OOREDOO_BYOP_TT_CODE || '2Go_Tt'];
-  const BYOP_LIMITED_CODES = String(env.OOREDOO_BYOP_LIMITED_CODES || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const byopTtCode = env.OOREDOO_BYOP_TT_CODE || '2Go_Tt';
+  const BYOP_CODES = ['IG', 'YT', 'WA', 'FB'];
+  const BYOP_LIMITED_CODES = [...new Set([
+    byopTtCode,
+    ...String(env.OOREDOO_BYOP_LIMITED_CODES || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ])];
 
 // ---------- تباعد OTP ----------
   async function withOtpPacing() {
