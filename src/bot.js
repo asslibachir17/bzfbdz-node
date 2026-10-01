@@ -1511,7 +1511,7 @@ ${msg}` : ""}`,
       const internet = ooredoo.BYOP_LIMITED_CODES.includes(code) ? "2Go فقط" : "غير محدود";
       return `${i + 1}- ${byopNameOf(code)}\n${color} • 100 دج 💸\n🌐 • إنترنت : ${internet}\n🗓️ • مدة : أسبوعين`;
     }).join("\n\n");
-    const offersText = `🎁 عروض مخصصة 🏷️\n📱 الرقم: ${maskOoredooPhone(inputPhone)}\n\n${byopBody}\n\nاختر العرض المناسب من الأزرار أدناه 🔽`;
+    const offersText = `🛍️ عروض مخصصة 🏷️\n📱 الرقم: ${maskOoredooPhone(inputPhone)}\n\n${byopBody}\n\nاختر العرض المناسب من الأزرار أدناه 🔽`;
     const pubReplies = [...byopButtons, ...backQR(inputPhone, operator)];
     await send(sender, { text: offersText, quick_replies: pubReplies }, session);
   }
@@ -1595,9 +1595,9 @@ ${msg}` : ""}`,
   async function showBundlesSubmenu(sender, inputPhone, operator, session) {
     const lines = [`📦 العروض\n📱 رقم الهاتف: ${maskOoredooPhone(inputPhone)}`, "", "🗳 اختر نوع العرض:"];
     const quick_replies = [
-      { content_type: "text", title: "📦 عروض مخصصة", payload: `oservices:${inputPhone}:${operator}:${sender}` },
-      { content_type: "text", title: "⭐ عروض خاصة", payload: `oexclusive:${inputPhone}:${operator}:${sender}` },
-      { content_type: "text", title: "🎁 عروض وفاء", payload: `oloyalty:${inputPhone}:${operator}:${sender}` },
+      { content_type: "text", title: "🛍️ عروض مخصصة", payload: `oservices:${inputPhone}:${operator}:${sender}` },
+      { content_type: "text", title: "💎 عروض حصرية", payload: `oexclusive:${inputPhone}:${operator}:${sender}` },
+      { content_type: "text", title: "💝 عروض وفاء", payload: `oloyalty:${inputPhone}:${operator}:${sender}` },
       ...backQR(inputPhone, operator)
     ];
     const numbered = numberedServiceLines(quick_replies);
@@ -2231,7 +2231,7 @@ const val = aa["usage-value"] != null ? String(aa["usage-value"]) : null;
     if (!bundles.length) {
       return { text: `⚠️ لا توجد ${kind === "exclusive" ? "عروض حصرية" : "عروض وفاء"} متاحة حاليًا.\n📱 الرقم: ${masked}`, quick_replies: back };
     }
-    const title = kind === "exclusive" ? "⭐ عروض حصرية 🏷️" : "🎁 عروض وفاء 🏷️";
+    const title = kind === "exclusive" ? "💎 عروض حصرية 🏷️" : "💝 عروض وفاء 🏷️";
     const body = bundles.map((b, i) => `${i + 1}- ${b.name}\n${renderCvmBundleItem(b, i)}`).join("\n\n");
     const lines = [`${title}\n📱 الرقم: ${masked}`, "", body];
     const quick_replies = bundles.map((b) => ({
