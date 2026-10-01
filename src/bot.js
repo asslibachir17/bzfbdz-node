@@ -1496,40 +1496,24 @@ ${msg}` : ""}`,
     }
   }
   async function showOoredooOffers(sender, inputPhone, operator, session) {
-    const byopTitles = {
-      IG: "📸 انستغرام",
-      YT: "▶️ يوتيوب",
-      WA: "💬 واتساب",
-      FB: "📘 فيسبوك",
-      "2Go_Tt": "🎵 تيك توك 2Go",
-      ...Object.fromEntries(ooredoo.BYOP_LIMITED_CODES.map((c) => [c, "🎵 تيك توك 2Go"]))
-    };
-    const userRow = await getUserByPhone(env, inputPhone);
-    const storedToken = userRow?.access_token || null;
-    const byopButtons = [
-      ...ooredoo.BYOP_CODES.map((code) => ({
-        content_type: "text",
-        title: `${byopTitles[code] || code} 100دج`,
-        payload: `obyopcode:${inputPhone}:${operator}:${code}`
-      })),
-      ...ooredoo.BYOP_LIMITED_CODES.map((code) => ({
-        content_type: "text",
-        title: `${byopTitles[code] || code} 100دج`,
-        payload: `obyopcode:${inputPhone}:${operator}:${code}`
-      }))
-    ];
-    const lines = [`📱 رقم الهاتف: ${maskOoredooPhone(inputPhone)}`, "", "🗳 اختر الخدمة التي تريدها"];
+    const byopNames = { IG: "انستغرام", YT: "يوتيوب", WA: "واتساب", FB: "فيسبوك" };
+    const byopTtName = "تيك توك 2Go";
+    const byopAllCodes = [...ooredoo.BYOP_CODES, ...ooredoo.BYOP_LIMITED_CODES];
+    const byopColors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤", "⚫", "⚪", "🔶", "🔷", "🟥"];
+    const byopNameOf = (code) => byopNames[code] || (ooredoo.BYOP_LIMITED_CODES.includes(code) ? byopTtName : code);
+    const byopButtons = byopAllCodes.map((code) => ({
+      content_type: "text",
+      title: `${byopNameOf(code)} 100دج`,
+      payload: `obyopcode:${inputPhone}:${operator}:${code}`
+    }));
+    const byopBody = byopAllCodes.map((code, i) => {
+      const color = byopColors[i % byopColors.length];
+      const internet = ooredoo.BYOP_LIMITED_CODES.includes(code) ? "2Go فقط" : "غير محدود";
+      return `${i + 1}- ${byopNameOf(code)}\n${color} • 100 دج 💸\n🌐 • إنترنت : ${internet}\n🗓️ • مدة : أسبوعين`;
+    }).join("\n\n");
+    const offersText = `🎁 عروض مخصصة 🏷️\n📱 الرقم: ${maskOoredooPhone(inputPhone)}\n\n${byopBody}\n\nاختر العرض المناسب من الأزرار أدناه 🔽`;
     const pubReplies = [...byopButtons, ...backQR(inputPhone, operator)];
-    const numberedOffers = numberedServiceLines(pubReplies);
-    const offersText = numberedOffers ? `${lines.join("\n")}\n\n${numberedOffers}` : lines.join("\n");
-    await send(
-      sender,
-      {
-        text: offersText,
-        quick_replies: pubReplies
-      },
-      session
-    );
+    await send(sender, { text: offersText, quick_replies: pubReplies }, session);
   }
   async function showServicesMenu(sender, inputPhone, operator, session) {
     let quickReplies = [];
