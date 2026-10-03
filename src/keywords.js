@@ -22,6 +22,7 @@ const ACTION_KEYWORDS = {
   infosimdjezzy: ['معلومات', 'الشريحه', 'الشريحة', 'معلومات الشريحه', 'حسابي', 'الحساب', 'معلومه', 'info'],
   startinvite: ['دعوه', 'دعوة', 'ادعو', 'ادعوا', 'دعوه صديق', 'دعوة صديق', 'invite'],
   srv1: ['انترنت', 'انترنيت', 'باقه', 'باقة', '4 جيغا', '4 جيجا', '70 دج', '4g', '4go', 'باقة انترنت'],
+  djoffers: ['عروض', 'العروض', 'عروض دجيزي', 'عروض الجازي', 'عرض', 'العرض', 'باقات', 'باقه', 'عروض internet', 'offers'],
   ogift: ['هديه', 'هدية', 'الهديه اليوميه', 'الهدية اليومية', 'gift'],
   osnap: ['سناب', 'سناب شات', 'snapchat', 'snap'],
   oaccount: ['معلومات', 'الشريحه', 'الشريحة', 'معلومات الشريحه', 'حسابي', 'الحساب', 'معلومه', 'info'],
@@ -135,7 +136,7 @@ export function buildFallbackOptions(phoneNumber, operator) {
     ];
   }
   if (operator === 'djezzy') {
-    return [p('activate2G'), p('infosimdjezzy'), p('startinvite'), p('srv1')];
+    return [p('djoffers'), p('activate2G'), p('infosimdjezzy'), p('startinvite'), p('srv1')];
   }
   return null;
 }

@@ -208,7 +208,8 @@ function createBot(env, ctx, platform = "fb") {
   const ooredoo = createOoredoo(env);
   const rc = rateConfig(env);
   const isTg = true;
-  const djezzyExperiments = String(env.EXPERIMENT_OFFERS || "") === "1";
+  // الإنتاج: يبقى مفعّلًا افتراضيًا حتى لو لم يزامن Render المتغيّر الجديد
+const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
 
   // محاولة تلقائية عند الحجب الجغرافي: يعيد المحاولة حتى3 مرات مع تأخير
   async function withBlockRetry(fn) {
@@ -726,7 +727,8 @@ function createBot(env, ctx, platform = "fb") {
       }
       case "djoffers": {
         if (!djezzyExperiments) break;
-        const result = await showDjezzyOffersMenu(sender, phoneNumber, operator, session);
+        const parts = String(payload).split(":");
+        const result = await showDjezzyOffersMenu(sender, parts[1] || phoneNumber, parts[2] || operator, session);
         await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
         break;
       }
