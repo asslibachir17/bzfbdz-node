@@ -352,6 +352,52 @@ export function createDjezzy(env) {
     return normalize(res, 500);
   }
 
+  // تفعيل خدمة shake (فئة Surprise): body = packageCode فقط.
+  // يُستدعى أولاً للعرض الامتياز، ومعه إعادة محاولة عبر activate-product عند 403/404.
+  async function activateShake(phone213, accessToken, packageCode) {
+    const res = await httpRequest(env, {
+      method: 'POST',
+      url: `${NEW_API_BASE}/services/shake/${phone213}`,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'MobileApp/3.0.9',
+        Accept: 'application/json',
+        'Accept-Language': 'fr',
+      },
+      body: { packageCode },
+      relayKey: 'DJEZZY_RELAY_URL',
+      useDbProxy: true,
+      proxyService: 'djezzy',
+      timeoutMs: 60000,
+    });
+    return normalize(res, 500);
+  }
+
+  // تفعيل عبر تطبيق الجوال: نفس مسار activate-product بترويسة MobileApp/3.0.9.
+  // هذا هو المسار العادي لعرض الإنترنت، والبديل عند رفض services/shake بـ 403/404.
+  async function activateProductApp(phone213, accessToken, packageCode, offerId) {
+    const body = { packageCode };
+    if (offerId) body.offerId = offerId;
+    const res = await httpRequest(env, {
+      method: 'POST',
+      url: `${NEW_API_BASE}/subscribers/activate-product/${phone213}`,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'MobileApp/3.0.9',
+        Accept: 'application/json',
+        'Accept-Language': 'fr',
+      },
+      body,
+      relayKey: 'DJEZZY_RELAY_URL',
+      useDbProxy: true,
+      proxyService: 'djezzy',
+      timeoutMs: 60000,
+    });
+    return normalize(res, 500);
+  }
+
   async function activateProduct(phone213, accessToken, packageCode, offerId) {
     const body = { packageCode };
     if (offerId) body.offerId = offerId;
@@ -484,6 +530,8 @@ export function createDjezzy(env) {
     getConnectedProductsBalances,
     getCustomerOffers,
     activateProduct,
+    activateShake,
+    activateProductApp,
     getMgmInvitations,
     sendMgmInvitation,
     deleteMgmInvitation,

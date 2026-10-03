@@ -83,6 +83,124 @@ function withFbButton(response, platform) {
   return { ...response, quick_replies: [...(response.quick_replies || []), facebookQR] };
 }
 
+// ---------------- عروض دجيزي ----------------
+// امتياز (فئة Surprise): services/shake ثم إعادة محاولة عبر activate-product عند 403/404.
+// إنترنت (فئة Internet): activate-product فقط بترويسة MobileApp/3.0.9.
+// الأسعار والمدد كما يعرضها customer-offers (tags=STANDARD,SURPRISE).
+const DJEZZY_SHAKE_OFFERS = {
+  BTLINTSPEEDDAY2Go: { label: "امتياز", name: "4Go", data: "4 جيغا", price: 70, duration: "24 ساعة", kind: "imtiyaz", cvmOfferId: 30199 },
+  BTL500MBDAY: { label: "امتياز", name: "5Go", data: "5 جيغا", price: 90, duration: "24 ساعة", kind: "imtiyaz", cvmOfferId: 10274 },
+  BTL4GBDAY: { label: "امتياز", name: "10Go", data: "10 جيغا", price: 190, duration: "3 أيام", kind: "imtiyaz", cvmOfferId: 10276 },
+  DOVINTSPEEDDAY100MoPRE: { label: "إنترنت يومي", name: "300Mo", data: "300 ميغا", price: 30, duration: "24 ساعة", kind: "internet" },
+  DOVINTSPEEDDAY250MoPRE: { label: "إنترنت يومي", name: "600Mo", data: "600 ميغا", price: 50, duration: "24 ساعة", kind: "internet" },
+  DOVINTSPEEDDAY1GoPRE: { label: "إنترنت يومي", name: "2Go", data: "2 جيغا", price: 100, duration: "24 ساعة", kind: "internet" },
+  DOVINTSPEEDDAY5GoPRE5G: { label: "إنترنت يومي", name: "5Go", data: "5 جيغا", price: 150, duration: "24 ساعة", kind: "internet" },
+  DOVINTSPEEDWEEK2GoPRE: { label: "إنترنت أسبوعي", name: "4Go", data: "4 جيغا", price: 150, duration: "أسبوع", kind: "internet" },
+  DOVINTSPEEDWEEK3GoPRE: { label: "إنترنت أسبوعي", name: "10Go", data: "10 جيغا", price: 300, duration: "أسبوع", kind: "internet" },
+  DOVINTSPEEDWEEK20GoPRE5G: { label: "إنترنت أسبوعي", name: "20Go", data: "20 جيغا", price: 500, duration: "أسبوع", kind: "internet" },
+  DOVINTSPEEDMONTH6GoPRE: { label: "إنترنت شهري", name: "12Go", data: "12 جيغا", price: 500, duration: "شهر", kind: "internet" },
+  DOVINTSPEEDMONTH15GoPRE: { label: "إنترنت شهري", name: "30Go", data: "30 جيغا", price: 1000, duration: "شهر", kind: "internet" }
+};
+const DJEZZY_SHAKE_ORDER = ["BTLINTSPEEDDAY2Go", "BTL500MBDAY", "BTL4GBDAY"];
+const DJEZZY_INTERNET_ORDER = [
+  "DOVINTSPEEDDAY100MoPRE",
+  "DOVINTSPEEDDAY250MoPRE",
+  "DOVINTSPEEDDAY1GoPRE",
+  "DOVINTSPEEDDAY5GoPRE5G",
+  "DOVINTSPEEDWEEK2GoPRE",
+  "DOVINTSPEEDWEEK3GoPRE",
+  "DOVINTSPEEDWEEK20GoPRE5G",
+  "DOVINTSPEEDMONTH6GoPRE",
+  "DOVINTSPEEDMONTH15GoPRE"
+];
+// ترتيب ثابت تصاعدي حسب السعر (.Apenyi أول صنف امتياز في التساوي)
+const DJEZZY_ALL_ORDER = [...DJEZZY_INTERNET_ORDER, ...DJEZZY_SHAKE_ORDER]
+  .map((code, i) => ({ code, i }))
+  .sort((a, b) => DJEZZY_SHAKE_OFFERS[a.code].price - DJEZZY_SHAKE_OFFERS[b.code].price || a.i - b.i)
+  .map((x) => x.code);
+
+// استخراج نص الرسالة من استجابات دجيزي (ar/fr/en)
+function pickLocalized(msg, fallback) {
+  if (!msg) return fallback || "";
+  if (typeof msg === "string") return msg;
+  if (typeof msg === "object") return msg.ar || msg.fr || msg.en || fallback || "";
+  return fallback || "";
+}
+
+function djezzyDurationLabel(amount, unit) {
+  const a = Number(amount) || 0;
+  const u = String(unit || "").toUpperCase();
+  if (u === "HOURS") return a >= 48 ? `${Math.round(a / 24)} أيام` : `${a} ساعة`;
+  if (u === "DAYS") return a === 1 ? "يوم" : a === 7 ? "أسبوع" : a === 30 ? "شهر" : `${a} أيام`;
+  if (u === "WEEKS") return `${a} أسابيع`;
+  return "";
+}
+
+function djezzyDataLabel(pkg) {
+  const parts = [];
+  for (const b of pkg?.trafficBundles || []) {
+    if (b.usageType !== "DATA") continue;
+    if (b.is_unlimited) parts.push("إنترنت مفتوح");
+    else {
+      const mb = Number(b.freeUsageAmount);
+      if (!Number.isFinite(mb) || mb <= 0) continue;
+      parts.push(mb >= 1024 ? `${Math.round((mb / 1024) * 10) / 10} Go` : `${mb} Mo`);
+    }
+  }
+  return parts.length ? [...new Set(parts)].join(" + ") : "";
+}
+
+// تصنيف عروض customer-offers القادمة إلى: امتياز + إنترنت
+function parseDjezzyOffers(payload) {
+  const out = { imtiyaz: [], internet: [] };
+  const cats = Array.isArray(payload?.data) ? payload.data : [];
+  for (const cat of cats) {
+    const code = String(cat?.code || "");
+    const target = code === "Surprise" ? out.imtiyaz : code === "Internet" ? out.internet : null;
+    if (!target) continue;
+    for (const sub of cat?.subcategories || []) {
+      for (const p of sub?.packages || []) {
+        if (p?.show === false || p?.isEligible === false) continue;
+        const price = Number(p.price);
+        if (!Number.isFinite(price)) continue;
+        target.push({
+          code: p.code,
+          name: p?.commercialName?.ar || p?.title?.ar || p.code,
+          price,
+          duration: djezzyDurationLabel(p.periodicAmount, p.periodicUnit),
+          data: djezzyDataLabel(p),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// نص قائمة العروض (نفس نمط بطاقات أوريدو) + عناوين أزرار كل العروض
+function buildDjezzyOffersMessage(mask) {
+  const colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤"];
+  const card = (o, i) => {
+    const rows = [`${i + 1}- ${o.label}`, `${colors[i % colors.length]} • ${o.price} دج 💸`];
+    if (o.data) rows.push(`🌐 • إنترنت : ${o.data}`);
+    if (o.duration) rows.push(`🗓️ • مدة : ${o.duration}`);
+    return rows.join("\n");
+  };
+  const body = DJEZZY_ALL_ORDER.map((code, i) => card(DJEZZY_SHAKE_OFFERS[code], i)).join("\n\n");
+  const text = `🛍️ عروض 🏷️
+📱 الرقم: ${mask}
+
+${body}
+
+اختر العرض المناسب من الأزرار أدناه 🔽`;
+  const buttons = DJEZZY_ALL_ORDER.map((code) => {
+    const o = DJEZZY_SHAKE_OFFERS[code];
+    return { code, title: `${o.price} دج - ${o.data} - ${o.duration}` };
+  });
+  return { text, buttons };
+}
+
+export { parseDjezzyOffers, buildDjezzyOffersMessage, DJEZZY_SHAKE_OFFERS, DJEZZY_SHAKE_ORDER, DJEZZY_INTERNET_ORDER, DJEZZY_ALL_ORDER };
+
 export
 function createBot(env, ctx, platform = "fb") {
   const messenger = platform === "tg" ? createTelegram(env) : platform === "ig" ? createInstagram(env) : createMessenger(env);
@@ -90,6 +208,7 @@ function createBot(env, ctx, platform = "fb") {
   const ooredoo = createOoredoo(env);
   const rc = rateConfig(env);
   const isTg = true;
+  const djezzyExperiments = String(env.EXPERIMENT_OFFERS || "") === "1";
 
   // محاولة تلقائية عند الحجب الجغرافي: يعيد المحاولة حتى3 مرات مع تأخير
   async function withBlockRetry(fn) {
@@ -603,6 +722,26 @@ function createBot(env, ctx, platform = "fb") {
         const code = parts[3];
         const result = await confirmByopPurchase(sender, phoneNumber, operator, code);
         await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "djoffers": {
+        if (!djezzyExperiments) break;
+        const result = await showDjezzyOffersMenu(sender, phoneNumber, operator, session);
+        await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "djshake": {
+        if (!djezzyExperiments) break;
+        const code = parts[3];
+        const result = await prepareDjezzyShakeOffer(sender, phoneNumber, operator, session, code);
+        if (result) await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        break;
+      }
+      case "djshakeok": {
+        if (!djezzyExperiments) break;
+        const code = parts[3];
+        const result = await executeDjezzyShakeOffer(sender, phoneNumber, operator, session, code);
+        if (result) await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
         break;
       }
       case "obyopconfirm": {
@@ -1515,6 +1654,171 @@ ${msg}` : ""}`,
     const pubReplies = [...byopButtons, ...backQR(inputPhone, operator)];
     await send(sender, { text: offersText, quick_replies: pubReplies }, session);
   }
+  async function djezzyOwnershipCheck(sender, phoneNumber) {
+    const existingUser = await getUserByPhone(env, phoneNumber);
+    if (!existingUser || String(existingUser.chat_id || "").trim() !== String(sender).trim())
+      return { ok: false, user: existingUser };
+    return { ok: true, user: existingUser };
+  }
+
+  async function prepareDjezzyShakeOffer(sender, phoneNumber, operator, session, code) {
+    const offer = DJEZZY_SHAKE_OFFERS[code];
+    if (!offer) return null;
+    const mask = formatPhoneNumber(phoneNumber);
+    const chk = await djezzyOwnershipCheck(sender, phoneNumber);
+    if (!chk.ok)
+      return {
+        text: `رقم الهاتف: ${mask} 📞
+يرجى التحقق من ملكيتك لهذا الرقم ❌`,
+        quick_replies: gocheckQR(phoneNumber, operator, sender)
+      };
+    if (!await botServiceCooldown(sender, `djshake-${code}`, phoneNumber, session)) return null;
+    return {
+      text: `✅ العرض: ${offer.label} (${offer.data}) لمدة ${offer.duration}
+📱 رقمك: ${mask}
+💵 السعر: ${offer.price} دج
+
+هل تريد التفعيل الآن؟`,
+      quick_replies: [
+        { content_type: "text", title: "✅ نعم، فعل العرض", payload: `djshakeok:${phoneNumber}:${operator}:${code}:${sender}` },
+        ...backQR(phoneNumber, operator)
+      ]
+    };
+  }
+
+  async function executeDjezzyShakeOffer(sender, phoneNumber, operator, session, code) {
+    const offer = DJEZZY_SHAKE_OFFERS[code];
+    const mask = formatPhoneNumber(phoneNumber);
+    const back = backQR(phoneNumber, operator);
+    if (!offer) return { text: "❌ عرض غير معروف.", quick_replies: back };
+    const formattedPhone = `213${String(phoneNumber || "").replace(/^0/, "").trim()}`;
+    const chk = await djezzyOwnershipCheck(sender, phoneNumber);
+    if (!chk.ok) {
+      if (!chk.user)
+        return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+      return {
+        text: `رقم الهاتف: ${mask} 📞
+يرجى التحقق من ملكيتك لهذا الرقم ❌`,
+        quick_replies: gocheckQR(phoneNumber, operator, sender)
+      };
+    }
+    const existingUser = chk.user;
+    if (!existingUser.access_token)
+      return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+
+    const lock = await checkAndSetCooldown(env, `djshake-${code}:lock:${phoneNumber}`, 12e4);
+    if (!lock.ok) return { text: "⏳ جاري تنفيذ العملية، الرجاء الانتظار قليلاً...", quick_replies: back };
+    try {
+      const tokenRes = await getDjezzyFreshToken(sender, phoneNumber, operator, existingUser, session);
+      if (!tokenRes.access_token) return tokenRes.fbResponse || {};
+      let token = tokenRes.access_token;
+      const trace = [];
+      const callApis = async (accessToken) => {
+        if (offer.kind === "internet") {
+          const direct = await djezzy.activateProductApp(formattedPhone, accessToken, code).catch(() => ({ statusCode: 0, data: null }));
+          trace.push({ api: "activate-product", http: direct?.statusCode, body: direct?.data });
+          return direct;
+        }
+        const shake = await djezzy.activateShake(formattedPhone, accessToken, code).catch(() => ({ statusCode: 0, data: null }));
+        const shakeBodyStatus = Number(shake?.data?.status) || 0;
+        trace.push({ api: "services/shake", http: shake?.statusCode, body: shake?.data });
+        if (![403, 404].includes(Number(shake?.statusCode)) && shakeBodyStatus !== 404) return shake;
+        console.log(`[djshake] ${code} shake=${shake?.statusCode}/${shakeBodyStatus} -> activate-product`);
+        const viaProduct = await djezzy.activateProductApp(formattedPhone, accessToken, code, offer.cvmOfferId).catch(() => ({ statusCode: 0, data: null }));
+        trace.push({ api: "activate-product", http: viaProduct?.statusCode, body: viaProduct?.data });
+        return viaProduct;
+      };
+      let res = await callApis(token);
+      if (isDjezzyAuthFail(res) && existingUser?.refresh_token) {
+        const tokenUpdate = await djezzy.refreshTokenV2(existingUser.refresh_token).catch(() => null);
+        if (tokenUpdate?.statusCode === 200 && tokenUpdate?.data?.access_token) {
+          await updateUserTokens(env, phoneNumber, tokenUpdate.data.access_token, tokenUpdate.data.refresh_token || existingUser.refresh_token);
+          token = tokenUpdate.data.access_token;
+          res = await callApis(token);
+        }
+      }
+      const statusCode = res?.statusCode || 0;
+      const data = res?.data;
+      const bodyStatus = Number(data?.status) || 0;
+      if (!((statusCode === 200 || statusCode === 201) && bodyStatus < 400)) {
+        try {
+          await env.DB.prepare(
+            "INSERT INTO request_logs (created_at, direction, kind, method, url, status_code, sender_psid, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+          ).bind(
+            Date.now(),
+            "out",
+            "diag:djshake",
+            "POST",
+            "services/shake",
+            statusCode,
+            sender,
+            JSON.stringify({ code, trace, data }).slice(0, 2e3)
+          ).run();
+        } catch (e) {}
+      }
+      if ((statusCode === 200 || statusCode === 201) && bodyStatus < 400) {
+        await setCooldown(env, `bot:djshake-${code}:${sender}:${phoneNumber}`, rc.botServiceCooldownMs);
+        await updateActivationDate(env, phoneNumber);
+        return withFbButton({
+          text: `✅ تم تفعيل ${offer.label} (${offer.data}) لمدة ${offer.duration} بنجاح!
+📱 رقمك: ${mask}
+💵 السعر: ${offer.price} دج`,
+          quick_replies: back
+        }, platform);
+      }
+      if (statusCode === 402 || bodyStatus === 402) {
+        const balance = data?.data?.mainBalance;
+        const balanceLine = balance != null ? `
+💳 رصيدك الحالي: ${Math.floor(Number(balance))} دج` : "";
+        return withFbButton({
+          text: `❌ ${pickLocalized(data?.message, "رصيدك غير كافي")}${balanceLine}
+📱 رقمك: ${mask}`,
+          quick_replies: back
+        }, platform);
+      }
+      if (statusCode === 401 || bodyStatus === 401) {
+        await sendVerificationCode(sender, phoneNumber, session);
+        return null;
+      }
+      if (res?.data?.blocked)
+        return withFbButton({ text: `⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
+      return withFbButton({ text: `رقمك غير مؤهل لعرض (${offer.label} ${offer.data}) ❎
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
+    } catch (e) {
+      console.error("[عرض امتياز]", code, "خطأ:", e.message);
+      return { text: `❌ حدث خطأ أثناء محاولة التفعيل ⚠️
+رقمك: ${mask}`, quick_replies: back };
+    } finally {
+      await clearCooldown(env, `djshake-${code}:lock:${phoneNumber}`);
+    }
+  }
+
+  async function showDjezzyOffersMenu(sender, phoneNumber, operator, session) {
+    const mask = formatPhoneNumber(phoneNumber);
+    const chk = await djezzyOwnershipCheck(sender, phoneNumber);
+    if (!chk.ok) {
+      if (!chk.user)
+        return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+      return { text: `رقم الهاتف: ${mask} 📞
+يرجى التحقق من ملكيتك لهذا الرقم ❌`, quick_replies: gocheckQR(phoneNumber, operator, sender) };
+    }
+    const existingUser = chk.user;
+    if (!existingUser.access_token)
+      return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+    const { text, buttons } = buildDjezzyOffersMessage(mask);
+    const quick_replies = [
+      ...buttons.map((b) => ({
+        content_type: "text",
+        title: b.title,
+        payload: `djshake:${phoneNumber}:${operator}:${b.code}:${sender}`,
+        full_row: true
+      })),
+      ...backQR(phoneNumber, operator)
+    ];
+    return { text, quick_replies: quick_replies };
+  }
+
   async function showServicesMenu(sender, inputPhone, operator, session) {
     let quickReplies = [];
     let statusLines = [];
@@ -1574,8 +1878,7 @@ ${msg}` : ""}`,
       }
       djezzyActionButtons.push({ content_type: "text", title: "معلومات الشريحة ℹ", payload: `infosimdjezzy:${inputPhone}:${operator}:${sender}`, full_row: true });
       if (isTg) djezzyActionButtons.push({ content_type: "text", title: "👥 دعوة", payload: `mgm-menu:${inputPhone}:${operator}`, full_row: true });
-      djezzyActionButtons.push({ content_type: "text", title: "70 دج - 4 جيغا - 24 ساعة", payload: `srv1:${inputPhone}:${operator}:${sender}`, full_row: true });
-      djezzyActionButtons.push({ content_type: "text", title: "100 دج - 2Go - 24 ساعة", payload: `srv2:${inputPhone}:${operator}:${sender}`, full_row: true });
+      if (djezzyExperiments) djezzyActionButtons.push({ content_type: "text", title: "🛍️ عروض 🏷️", payload: `djoffers:${inputPhone}:${operator}:${sender}`, full_row: true });
       if (djezzyStatusLines.length) {
         djezzyStatusLines.push("", "🗳 اختر الخدمة التي تريدها");
         statusLines = [...(statusLines.length ? statusLines : [`📱 رقم الهاتف: ${formatPhoneNumber(inputPhone)}`]), ...djezzyStatusLines];

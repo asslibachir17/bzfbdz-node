@@ -108,3 +108,7 @@ services:
         value: "8"
       - key: LOAD_QUEUE_TTL_MS
         value: "12000"
+
+      # ---------- ميزات دجيزي ----------
+      - key: EXPERIMENT_OFFERS
+        value: "1"
