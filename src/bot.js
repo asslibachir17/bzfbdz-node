@@ -515,6 +515,10 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
     const pendingPayload = session.pendingPayload || null;
     delete session.pendingPayload;
     await send(sender, { text: "✅ تم التحقق بنجاح!" }, session);
+    // العودة للدفعة المعلّقة ليست ضغطة زر مكررة، لذلك نلغي حارس التكرار قبل تشغيلها
+    // وإلا أُهملت الشاشات التي طلبت التحقق تلقائيًا (قائمة العروض / بطاقة العرض).
+    session.last_payload = null;
+    session.last_payload_ts = 0;
     if (pendingPayload) {
       await handlePostback(sender, { payload: pendingPayload }, session);
     } else {
@@ -729,7 +733,7 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
         if (!djezzyExperiments) break;
         const parts = String(payload).split(":");
         const result = await showDjezzyOffersMenu(sender, parts[1] || phoneNumber, parts[2] || operator, session);
-        await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
+        if (result) await send(sender, { text: result.text, quick_replies: result.quick_replies || [] }, session);
         break;
       }
       case "djshake": {
@@ -1663,17 +1667,38 @@ ${msg}` : ""}`,
     return { ok: true, user: existingUser };
   }
 
+  // بدل رسالة «تحقق من ملكيتك» + زر: نرسل رمز التحقق تلقائيًا ونترك المستخدم يُكمل بالرمز.
+  // pendingPayload يجعل البوت يعود لنفس الشاشة (قائمة العروض أو بطاقة التأكيد) بعد نجاح التحقق.
+  async function djezzyAutoVerify(sender, phoneNumber, session, pendingPayload) {
+    // نستبدل أي دفعة معلّقة سابقًا (قد تكون زر تفعيل يخصم المال) بشاشة العرض الآمنة،
+    // حتى لو تعذّر إرسال الرمز الآن فتبقى العودة للبطاقة لا للتفعيل.
+    session.pendingPayload = pendingPayload;
+    await saveSession(env, session);
+    const gate = await checkAndSetCooldown(env, `djverify:${sender}:${phoneNumber}`, 3 * 60e3);
+    if (!gate.ok) {
+      const minutes = Math.max(1, Math.ceil(gate.leftMs / 6e4));
+      await send(
+        sender,
+        {
+          text: `⏳ سبق أن أرسلنا رمز تحقق إلى هذا الرقم.
+أدخل الرمز الذي وصلك، أو أعد إرسال رقمك بعد ${minutes} دقيقة.`
+        },
+        session
+      );
+      return;
+    }
+    await sendVerificationCode(sender, phoneNumber, session, pendingPayload);
+  }
+
   async function prepareDjezzyShakeOffer(sender, phoneNumber, operator, session, code) {
     const offer = DJEZZY_SHAKE_OFFERS[code];
     if (!offer) return null;
     const mask = formatPhoneNumber(phoneNumber);
     const chk = await djezzyOwnershipCheck(sender, phoneNumber);
-    if (!chk.ok)
-      return {
-        text: `رقم الهاتف: ${mask} 📞
-يرجى التحقق من ملكيتك لهذا الرقم ❌`,
-        quick_replies: gocheckQR(phoneNumber, operator, sender)
-      };
+    if (!chk.ok) {
+      await djezzyAutoVerify(sender, phoneNumber, session, `djshake:${phoneNumber}:${operator}:${code}:${sender}`);
+      return null;
+    }
     if (!await botServiceCooldown(sender, `djshake-${code}`, phoneNumber, session)) return null;
     return {
       text: `✅ العرض: ${offer.label} (${offer.data}) لمدة ${offer.duration}
@@ -1696,17 +1721,14 @@ ${msg}` : ""}`,
     const formattedPhone = `213${String(phoneNumber || "").replace(/^0/, "").trim()}`;
     const chk = await djezzyOwnershipCheck(sender, phoneNumber);
     if (!chk.ok) {
-      if (!chk.user)
-        return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
-      return {
-        text: `رقم الهاتف: ${mask} 📞
-يرجى التحقق من ملكيتك لهذا الرقم ❌`,
-        quick_replies: gocheckQR(phoneNumber, operator, sender)
-      };
+      await djezzyAutoVerify(sender, phoneNumber, session, `djshake:${phoneNumber}:${operator}:${code}:${sender}`);
+      return null;
     }
     const existingUser = chk.user;
-    if (!existingUser.access_token)
-      return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+    if (!existingUser.access_token) {
+      await djezzyAutoVerify(sender, phoneNumber, session, `djshake:${phoneNumber}:${operator}:${code}:${sender}`);
+      return null;
+    }
 
     const lock = await checkAndSetCooldown(env, `djshake-${code}:lock:${phoneNumber}`, 12e4);
     if (!lock.ok) return { text: "⏳ جاري تنفيذ العملية، الرجاء الانتظار قليلاً...", quick_replies: back };
@@ -1800,14 +1822,14 @@ ${msg}` : ""}`,
     const mask = formatPhoneNumber(phoneNumber);
     const chk = await djezzyOwnershipCheck(sender, phoneNumber);
     if (!chk.ok) {
-      if (!chk.user)
-        return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
-      return { text: `رقم الهاتف: ${mask} 📞
-يرجى التحقق من ملكيتك لهذا الرقم ❌`, quick_replies: gocheckQR(phoneNumber, operator, sender) };
+      await djezzyAutoVerify(sender, phoneNumber, session, `djoffers:${phoneNumber}:${operator}:${sender}`);
+      return null;
     }
     const existingUser = chk.user;
-    if (!existingUser.access_token)
-      return { text: "❌ لم يتم العثور على جلسة لهذا الرقم.\nيرجى التحقق أولاً.", quick_replies: gocheckQR(phoneNumber, operator, sender) };
+    if (!existingUser.access_token) {
+      await djezzyAutoVerify(sender, phoneNumber, session, `djoffers:${phoneNumber}:${operator}:${sender}`);
+      return null;
+    }
     const { text, buttons } = buildDjezzyOffersMessage(mask);
     const quick_replies = [
       ...buttons.map((b) => ({
