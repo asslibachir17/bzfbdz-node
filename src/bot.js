@@ -833,7 +833,21 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
       if (!tokenRes.access_token)
         return tokenRes.fbResponse || {};
       let accessToken = tokenRes.access_token;
-      const walkBody = JSON.stringify({ packageCode: "GIFTWALKWIN2GO" });
+      // قبل ضرب services/walk: نتحقق من الكتالوج الحي للرقم. الهدية الأسبوعية (2Go) تظهر
+      // فقط عندما تكون متاحة فعلاً لصاحب الرقم — إذا لم توجد، نرفض بأدب بدل خطأ 403.
+      const liveCatalog = await djezzy.getCustomerOffers(formattedPhone, accessToken, "STANDARD,SURPRISE").catch(() => ({ statusCode: 0, data: null }));
+      const parsedCatalog = liveCatalog?.statusCode === 200 && liveCatalog?.data ? parseDjezzyOffers(liveCatalog.data) : { imtiyaz: [], internet: [] };
+      const freeGift = [...parsedCatalog.imtiyaz, ...parsedCatalog.internet].find((o) => {
+        const norm = String(o.code || "");
+        const name = String(o.name || "");
+        return o.price === 0 || /GIFT|WALK|GRATUIT|FRE/i.test(norm) || /هبة|مجاني|هدية/i.test(name);
+      });
+      if (!freeGift) {
+        return withFbButton({ text: `❌ عرض 2Go الأسبوعي غير متوفر لرقمك حالياً.
+رقم الهاتف: ${mask}`, quick_replies: back }, platform);
+      }
+      console.log(`[2Go V2] ${mask} -> walk gift ${freeGift.code} (${freeGift.price} دج)`);
+      const walkBody = JSON.stringify({ packageCode: freeGift.code || "GIFTWALKWIN2GO" });
       let walkRes = await httpRequest(env, {
         method: "POST",
         url: `${NEW_API_BASE2}/services/walk/activate-reward/${formattedPhone}`,
@@ -1883,7 +1897,42 @@ ${msg}` : ""}`,
       await djezzyAutoVerify(sender, phoneNumber, session, `djoffers:${phoneNumber}:${operator}:${sender}`);
       return null;
     }
-    const { text, buttons } = buildDjezzyOffersMessage(mask);
+    // بناء القائمة من الكتالوج الحي للرقم (امتياز + إنترنت) ليعرض فقط ما يملكه الرقم فعلاً،
+    // مع التراجع للقائمة الثابتة إذا تعذر الجلب أو كان الكتالوج فارغاً.
+    const formattedPhone = `213${String(phoneNumber || "").replace(/^0/, "").trim()}`;
+    const tokenRes = await getDjezzyFreshToken(sender, phoneNumber, operator, existingUser, session);
+    let live = null;
+    if (tokenRes?.access_token) {
+      const liveFetch = await djezzy.getCustomerOffers(formattedPhone, tokenRes.access_token, "STANDARD,SURPRISE").catch(() => ({ statusCode: 0, data: null }));
+      if (liveFetch?.statusCode === 200 && liveFetch?.data) {
+        const parsed = parseDjezzyOffers(liveFetch.data);
+        if (parsed.imtiyaz.length || parsed.internet.length) live = parsed;
+      }
+    }
+    let text;
+    let buttons;
+    if (live) {
+      const colors = ["🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "🟤"];
+      const card = (o, i) => {
+        const rows = [`${i + 1}- ${o.name || o.code}`, `${colors[i % colors.length]} • ${o.price} دج 💸`];
+        if (o.data) rows.push(`🌐 • إنترنت : ${o.data}`);
+        if (o.duration) rows.push(`🗓️ • مدة : ${o.duration}`);
+        return rows.join("\n");
+      };
+      const items = [...live.imtiyaz, ...live.internet].sort((a, b) => a.price - b.price);
+      const body = items.map((o, i) => card(o, i)).join("\n\n");
+      text = `🛍️ عروض 🏷️
+📱 الرقم: ${mask}
+
+${body}
+
+اختر العرض المناسب من الأزرار أدناه 🔽`;
+      buttons = items.map((o) => ({ code: o.code, title: `${o.price} دج - ${o.data || o.name} - ${o.duration}` }));
+    } else {
+      const fallback = buildDjezzyOffersMessage(mask);
+      text = fallback.text;
+      buttons = fallback.buttons;
+    }
     const quick_replies = [
       ...buttons.map((b) => ({
         content_type: "text",

@@ -269,28 +269,39 @@ export function createDjezzy(env) {
     return normalize(res, 500);
   }
 
+  // تجديد التوكن: verifyCodeV2 يُصدر التوكن بنطاق openid، فيجب أن يكون التجديد
+  // بنفس النطاق وإلا يعيد جيزي invalid_grant لكل مستخدم (كانت هذه علّة التجديد
+  // الكاملة: النطاق كان djezzyAppV2 بينما الإصدار openid، فكل تجديد يفشل بعد
+  // انتهاء صلاحية التوكن → كل عمليات دجيزي تتعطل حتى إعادة OTP). نجرب openid
+  // أولاً ثم djezzyAppV2 احتياطاً للتوكنات القديمة الصادرة بذلك النطاق.
   async function refreshTokenV2(refreshToken) {
-    const res = await httpRequest(env, {
-      method: 'POST',
-      url: `${NEW_OAUTH_BASE}/oauth2/token`,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': UA_NEW,
-        Accept: '*/*',
-      },
-      body: form({
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-        scope: 'djezzyAppV2',
-        client_secret: clientSecretV2,
-        client_id: clientIdV2,
-      }),
-      relayKey: 'DJEZZY_RELAY_URL',
-      useDbProxy: true,
-      proxyService: 'djezzy',
-      timeoutMs: 60000,
-    });
-    return normalize(res, 500);
+    const attempt = async (scope) => {
+      const res = await httpRequest(env, {
+        method: 'POST',
+        url: `${NEW_OAUTH_BASE}/oauth2/token`,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': UA_NEW,
+          Accept: '*/*',
+        },
+        body: form({
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+          scope,
+          client_secret: clientSecretV2,
+          client_id: clientIdV2,
+        }),
+        relayKey: 'DJEZZY_RELAY_URL',
+        useDbProxy: true,
+        proxyService: 'djezzy',
+        timeoutMs: 60000,
+      });
+      return normalize(res, 500);
+    };
+    let out = await attempt('openid');
+    if (out.statusCode === 200 && out.data?.access_token) return out;
+    const retry = await attempt('djezzyAppV2').catch(() => null);
+    return retry && retry.data?.access_token ? retry : out;
   }
 
   function newHeaders(accessToken) {
