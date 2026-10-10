@@ -5,6 +5,7 @@ import { createOoredoo } from './services/ooredoo.js';
 import { createMessenger } from './messenger.js';
 import { getLoadGuard } from './loadGuard.js';
 import { resolveRelays } from './config/relays.js';
+import { getSetting, setSetting } from './settings.js';
 
 // مخزن السجلات الأخيرة في الذاكرة (يُقرأ عبر /debuglogs عند الحاجة)
 const ringLog = [];
@@ -46,6 +47,24 @@ export default {
         });
       } catch (e) {
         return new Response(JSON.stringify({ ok: false, error: e.message || String(e) }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+    if (url.pathname === '/_diag/maintenance') {
+      if (!env.DIAG_KEY || request.headers.get('x-diag-key') !== env.DIAG_KEY) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      if (request.method === 'GET') {
+        const enabled = (await getSetting(env, 'djezzy_maintenance')) === '1';
+        return new Response(JSON.stringify({ enabled }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        await setSetting(env, 'djezzy_maintenance', body.enabled ? '1' : '0');
+        return new Response(JSON.stringify({ enabled: Boolean(body.enabled) }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }

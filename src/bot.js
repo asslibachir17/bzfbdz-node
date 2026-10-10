@@ -9,6 +9,9 @@ import { httpRequest } from './services/http.js';
 
 const NEW_API_BASE2 = "https://apim.djezzy.dz/mobile-api/api/v1";
 
+// صيانة مؤقتة لدجيزي: نُظهر هذه الرسالة بدل أخطاء الخدمة حتى يكتمل الإصلاح.
+const DJEZZY_MAINTENANCE_MSG = "📶 نوع الشريحة: Djezzy\nجيزي في طور الإنجاز حالـيا 🤠🛠️";
+
 import {
   getUserByPhone,
   updateUserTokens,
@@ -22,6 +25,7 @@ import { checkAndSetCooldown, checkAndSetCooldownOne, setCooldown, clearCooldown
 import { fastFloodGate, isDuplicatePayload } from './rateLimit.js';
 import { loadSession, saveSession, getMenuContext } from './session.js';
 import { matchKeywordIntent, buildFallbackOptions } from './keywords.js';
+import { isDjezzyMaintenance } from './settings.js';
 import {
   formatPhoneNumber,
   isValidDjezzyNumber,
@@ -169,6 +173,7 @@ function parseDjezzyOffers(payload) {
           price,
           duration: djezzyDurationLabel(p.periodicAmount, p.periodicUnit),
           data: djezzyDataLabel(p),
+          offerId: p?.cvmOfferId != null ? Number(p.cvmOfferId) : undefined,
         });
       }
     }
@@ -408,6 +413,10 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
       await send(sender, { text: "❌ رقم غير صالح!\nيرجى إدخال رقم هاتف صالح." }, session);
       return;
     }
+    if (operator === "djezzy" && (await isDjezzyMaintenance(env))) {
+      await send(sender, { text: DJEZZY_MAINTENANCE_MSG }, session);
+      return;
+    }
     const existingUser = await getUserByPhone(env, inputPhone);
     if (existingUser?.access_token) {
       if (session.last_phone_sent === inputPhone && existingUser.operator === "djezzy") {
@@ -558,6 +567,10 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
     const action = parts[0];
     const phoneNumber = parts[1];
     const operator = parts[2];
+    if (operator === "djezzy" && (await isDjezzyMaintenance(env))) {
+      await send(sender, { text: DJEZZY_MAINTENANCE_MSG }, session);
+      return;
+    }
     if (action !== "gocheck") {
       session.pendingPayload = payload;
     }
@@ -835,6 +848,7 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
         relayKey: "DJEZZY_RELAY_URL",
         useDbProxy: true,
         proxyService: "djezzy",
+        sid: formattedPhone,
         timeoutMs: 6e4
       }).catch(() => ({ status: 0, data: null }));
       let res = { statusCode: walkRes.status, data: walkRes.data, raw: walkRes };
@@ -857,6 +871,7 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
             relayKey: "DJEZZY_RELAY_URL",
             useDbProxy: true,
             proxyService: "djezzy",
+            sid: formattedPhone,
             timeoutMs: 6e4
           }).catch(() => ({ status: 0, data: null }));
           res = { statusCode: walkRes.status, data: walkRes.data, raw: walkRes };
@@ -879,19 +894,25 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
         } catch (e) {
         }
       }
-      if ((res.statusCode === 200 || res.statusCode === 201) && res.data?.status === 200 && res.data?.message === "Product successfully activated") {
+      const resStatus = res.statusCode || 0;
+      const resBodyStatus = Number(res.data?.status) || 0;
+      if ((resStatus === 200 || resStatus === 201) && [200, 201, 202].includes(resBodyStatus) && res.data?.message === "Product successfully activated") {
         await updateActivationDate(env, phoneNumber);
         await setCooldown(env, `act2g:op:${phoneNumber}`, ACTIVATE_2G_TRY_COOLDOWN_MS);
         return withFbButton({ text: `تم تفعيل 2Go بنجاح! 🎉
 رقم الهاتف: ${mask}`, quick_replies: back }, platform);
       }
-      if (res.statusCode === 403 || res.data?.status === 403) {
-        return withFbButton({ text: `❌ لم يمر أسبوع منذ آخر تفعيل.
+      if (res?.data?.blocked || resStatus === 0 || (resStatus >= 500 && resStatus <= 599)) {
+        return withFbButton({ text: `⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.
 رقم الهاتف: ${mask}`, quick_replies: back }, platform);
       }
-      if (res.statusCode === 401 || res.data?.status === 401) {
-        return withFbButton({ text: `❌ لم يمر أسبوع منذ آخر تفعيل.
+      if (resStatus === 403 || resBodyStatus === 403) {
+        return withFbButton({ text: `❌ هذه العملية غير متوفرة حاليًا.
 رقم الهاتف: ${mask}`, quick_replies: back }, platform);
+      }
+      if (resStatus === 401 || resBodyStatus === 401) {
+        await sendVerificationCode(sender, phoneNumber, session);
+        return null;
       }
       return { text: `حدث خطأ أثناء محاولة التفعيل ⚠️
 رقم الهاتف: ${mask}`, quick_replies: back };
@@ -963,6 +984,7 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
         relayKey: "DJEZZY_RELAY_URL",
         useDbProxy: true,
         proxyService: "djezzy",
+        sid: formattedPhone,
         timeoutMs: 6e4
       }).catch(() => ({ status: 0, data: null }));
       let res = { statusCode: prodRes.status, data: prodRes.data, raw: prodRes };
@@ -985,6 +1007,7 @@ const djezzyExperiments = String(env.EXPERIMENT_OFFERS ?? "1") !== "0";
             relayKey: "DJEZZY_RELAY_URL",
             useDbProxy: true,
             proxyService: "djezzy",
+            sid: formattedPhone,
             timeoutMs: 6e4
           }).catch(() => ({ status: 0, data: null }));
           res = { statusCode: prodRes.status, data: prodRes.data, raw: prodRes };
@@ -1566,6 +1589,7 @@ ${msg}` : ""}`,
         relayKey: "DJEZZY_RELAY_URL",
         useDbProxy: true,
         proxyService: "djezzy",
+        sid: formattedPhone,
         timeoutMs: 6e4
       }).catch(() => ({ status: 0, data: null }));
       let res = { statusCode: prodRes.status, data: prodRes.data, raw: prodRes };
@@ -1588,6 +1612,7 @@ ${msg}` : ""}`,
             relayKey: "DJEZZY_RELAY_URL",
             useDbProxy: true,
             proxyService: "djezzy",
+            sid: formattedPhone,
             timeoutMs: 6e4
           }).catch(() => ({ status: 0, data: null }));
           res = { statusCode: prodRes.status, data: prodRes.data, raw: prodRes };
@@ -1736,19 +1761,32 @@ ${msg}` : ""}`,
       const tokenRes = await getDjezzyFreshToken(sender, phoneNumber, operator, existingUser, session);
       if (!tokenRes.access_token) return tokenRes.fbResponse || {};
       let token = tokenRes.access_token;
+      // جلب كتالوج العروض الحيّ من customer-offers لتحديث packageCode/offerId الفعليين
+      // عند كل تفعيل (فحص مجاني/قراءة فقط). لو فشل، نقع على القيم الثابتة.
+      let effectiveCode = code;
+      let effectiveOfferId = offer.cvmOfferId;
+      const liveFetch = await djezzy.getCustomerOffers(formattedPhone, token, "STANDARD,SURPRISE").catch(() => ({ statusCode: 0, data: null }));
+      if (liveFetch?.statusCode === 200 && liveFetch?.data) {
+        const parsedLive = parseDjezzyOffers(liveFetch.data);
+        const found = [...parsedLive.imtiyaz, ...parsedLive.internet].find((o) => o.code === code);
+        if (found) {
+          effectiveCode = found.code;
+          if (found.offerId != null) effectiveOfferId = found.offerId;
+        }
+      }
       const trace = [];
       const callApis = async (accessToken) => {
         if (offer.kind === "internet") {
-          const direct = await djezzy.activateProductApp(formattedPhone, accessToken, code).catch(() => ({ statusCode: 0, data: null }));
+          const direct = await djezzy.activateProductApp(formattedPhone, accessToken, effectiveCode, effectiveOfferId).catch(() => ({ statusCode: 0, data: null }));
           trace.push({ api: "activate-product", http: direct?.statusCode, body: direct?.data });
           return direct;
         }
-        const shake = await djezzy.activateShake(formattedPhone, accessToken, code).catch(() => ({ statusCode: 0, data: null }));
+        const shake = await djezzy.activateShake(formattedPhone, accessToken, effectiveCode).catch(() => ({ statusCode: 0, data: null }));
         const shakeBodyStatus = Number(shake?.data?.status) || 0;
         trace.push({ api: "services/shake", http: shake?.statusCode, body: shake?.data });
         if (![403, 404].includes(Number(shake?.statusCode)) && shakeBodyStatus !== 404) return shake;
         console.log(`[djshake] ${code} shake=${shake?.statusCode}/${shakeBodyStatus} -> activate-product`);
-        const viaProduct = await djezzy.activateProductApp(formattedPhone, accessToken, code, offer.cvmOfferId).catch(() => ({ statusCode: 0, data: null }));
+        const viaProduct = await djezzy.activateProductApp(formattedPhone, accessToken, effectiveCode, effectiveOfferId).catch(() => ({ statusCode: 0, data: null }));
         trace.push({ api: "activate-product", http: viaProduct?.statusCode, body: viaProduct?.data });
         return viaProduct;
       };
@@ -1763,8 +1801,10 @@ ${msg}` : ""}`,
       }
       const statusCode = res?.statusCode || 0;
       const data = res?.data;
+      const dataIsString = typeof data === "string";
       const bodyStatus = Number(data?.status) || 0;
-      if (!((statusCode === 200 || statusCode === 201) && bodyStatus < 400)) {
+      const success = (statusCode === 200 || statusCode === 201) && [200, 201, 202].includes(bodyStatus);
+      if (!success) {
         try {
           await env.DB.prepare(
             "INSERT INTO request_logs (created_at, direction, kind, method, url, status_code, sender_psid, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -1776,11 +1816,11 @@ ${msg}` : ""}`,
             "services/shake",
             statusCode,
             sender,
-            JSON.stringify({ code, trace, data }).slice(0, 2e3)
+            JSON.stringify({ code, effectiveCode, effectiveOfferId, trace, data }).slice(0, 2e3)
           ).run();
         } catch (e) {}
       }
-      if ((statusCode === 200 || statusCode === 201) && bodyStatus < 400) {
+      if (success) {
         await setCooldown(env, `bot:djshake-${code}:${sender}:${phoneNumber}`, rc.botServiceCooldownMs);
         await updateActivationDate(env, phoneNumber);
         return withFbButton({
@@ -1790,6 +1830,12 @@ ${msg}` : ""}`,
           quick_replies: back
         }, platform);
       }
+      if (res?.data?.blocked)
+        return withFbButton({ text: `⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
+      if (statusCode === 0 || (statusCode >= 500 && statusCode <= 599) || dataIsString && /INVALID_ZONE|invalid zone|Request Rejected/i.test(data))
+        return withFbButton({ text: `⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
       if (statusCode === 402 || bodyStatus === 402) {
         const balance = data?.data?.mainBalance;
         const balanceLine = balance != null ? `
@@ -1804,10 +1850,17 @@ ${msg}` : ""}`,
         await sendVerificationCode(sender, phoneNumber, session);
         return null;
       }
-      if (res?.data?.blocked)
+      if (statusCode === 404 || bodyStatus === 404)
+        return withFbButton({ text: `العرض (${offer.label} ${offer.data}) غير متوفر حاليًا ❎
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
+      if ((statusCode === 403 || bodyStatus === 403) && dataIsString && /<html|<!doctype/i.test(data))
         return withFbButton({ text: `⚠️ تعذر تنفيذ العملية الآن، حاول مرة أخرى.
 📱 رقمك: ${mask}`, quick_replies: back }, platform);
-      return withFbButton({ text: `رقمك غير مؤهل لعرض (${offer.label} ${offer.data}) ❎
+      if (statusCode === 403 || bodyStatus === 403)
+        return withFbButton({ text: `رقمك غير مؤهل لعرض (${offer.label} ${offer.data}) ❎
+📱 رقمك: ${mask}`, quick_replies: back }, platform);
+      const errMsg3 = dataIsString ? "" : pickLocalized(data?.message, "");
+      return withFbButton({ text: `❌ ${errMsg3 || "حدث خطأ أثناء محاولة التفعيل"}
 📱 رقمك: ${mask}`, quick_replies: back }, platform);
     } catch (e) {
       console.error("[عرض امتياز]", code, "خطأ:", e.message);

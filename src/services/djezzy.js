@@ -159,6 +159,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -179,6 +180,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -230,6 +232,7 @@ export function createDjezzy(env) {
         relayKey: 'DJEZZY_RELAY_URL',
         useDbProxy: true,
         proxyService: 'djezzy',
+        sid: phone,
         timeoutMs: 60000,
       });
       return normalize(res, 500);
@@ -260,6 +263,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: mobile,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -307,6 +311,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -320,6 +325,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -333,6 +339,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -347,6 +354,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -369,6 +377,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -393,6 +402,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -409,6 +419,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -423,6 +434,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);
@@ -437,6 +449,7 @@ export function createDjezzy(env) {
       relayKey: 'DJEZZY_RELAY_URL',
       useDbProxy: true,
       proxyService: 'djezzy',
+      sid: phone213,
       timeoutMs: 60000,
     });
     return normalize(res, 500);

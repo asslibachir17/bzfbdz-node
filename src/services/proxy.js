@@ -11,6 +11,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 const POOL_SIZE = 3;
 const POOL_TTL_MS = 60000;
 const STICKY_TTL_MS = 5 * 60 * 1000;
+const STICKY_SID_TTL_MS = 30 * 60 * 1000;
 const BAD_TTL_MS = 5 * 60 * 1000;
 const LAST_USED_TTL_MS = 30000;
 const D1_WRITE_THROTTLE_MS = 10000; // لا نكتب لنفس البروكسي في D1 إلا كل 10 ثوانٍ
@@ -19,6 +20,13 @@ const MAX_ATTEMPTS = 3;
 // ─── ذاكرة حالة (per-process) ───
 const poolCache = new Map();
 const stickyByService = new Map();
+// تثبيت بروكسي بعينه لكل (خدمة، sid): تُخرج OTP/التوكين/الفعيل من نفس IP
+// (بدون لمس اسم المستخدم — بعض المزوّدين كـ kookeey يرفضون لاحقة -sid-).
+const sidSticky = new Map(); // `${service}:${sid}` -> { proxyId, until }
+function stickSid(service, sid, proxyId) {
+  if (!service || !sid || !proxyId) return;
+  sidSticky.set(`${service}:${sid}`, { proxyId: String(proxyId), until: Date.now() + STICKY_SID_TTL_MS });
+}
 const badProxies = new Map();
 const lastUsedCache = new Map();
 const d1WriteCache = new Map(); // proxyId → آخر وقت كتابة في DB (للتخفيف)
@@ -34,13 +42,17 @@ async function ensureMigration(env) {
 }
 
 // ─── جلب البروكسيات من DB (مع تصفية المحجوبة) ───
-async function fetchProxyPool(env, service = 'shared') {
+async function fetchProxyPool(env, service = 'shared', sid = null) {
   if (!env || !env.DB) throw new Error('env.DB غير معرفة');
   await ensureMigration(env);
 
   const now = Date.now();
   const cached = poolCache.get(service);
-  if (cached && now - cached.fetchedAt < POOL_TTL_MS) return cached;
+  if (cached && now - cached.fetchedAt < POOL_TTL_MS) {
+    const entry = sid ? { list: cached.list.slice(), fetchedAt: cached.fetchedAt } : cached;
+    if (sid) ensurePinned(entry.list, service, sid);
+    return entry;
+  }
 
   let list = [];
   try {
@@ -61,7 +73,26 @@ async function fetchProxyPool(env, service = 'shared') {
 
   const entry = { list, fetchedAt: now };
   poolCache.set(service, entry);
+  if (sid) ensurePinned(entry.list, service, sid);
   return entry;
+}
+
+// يضع البروكسي المثبّت لهذا السيد في مقدمة القائمة (ويحضره من DB إن خرج من الكاش)
+async function ensurePinned(list, service, sid) {
+  const pin = sidSticky.get(`${service}:${sid}`);
+  if (!pin) return;
+  if (pin.until <= Date.now()) { sidSticky.delete(`${service}:${sid}`); return; }
+  const already = list.find((p) => String(p.id) === String(pin.proxyId));
+  if (already) {
+    const idx = list.indexOf(already);
+    if (idx > 0) { list.splice(idx, 1); list.unshift(already); }
+    return;
+  }
+  try {
+    const pr = await env.DB.prepare('SELECT * FROM proxies WHERE id = ?').bind(Number(pin.proxyId)).first();
+    if (pr) list.unshift(pr);
+    else sidSticky.delete(`${service}:${sid}`);
+  } catch {}
 }
 
 // ─── حالة البروكسي ───
@@ -100,7 +131,14 @@ function markGoodD1(env, proxyId) {
 }
 
 // ─── اختيار البروكسي ───
-function pickStickyProxy(entry, service, t = Date.now()) {
+function pickStickyProxy(entry, service, sid = null, t = Date.now()) {
+  if (service && sid) {
+    const pin = sidSticky.get(`${service}:${sid}`);
+    if (pin && pin.until > t) {
+      const same = entry.list.find((p) => String(p.id) === String(pin.proxyId));
+      if (same && !isProxyBad(same.id, t)) return same;
+    }
+  }
   const sticky = stickyByService.get(service);
   if (sticky && t - sticky.pickedAt < STICKY_TTL_MS) {
     const same = entry.list.find((p) => String(p.id) === String(sticky.proxyId));
@@ -118,8 +156,11 @@ function pickNextProxy(entry, excludeIds, t = Date.now()) {
 }
 
 // ─── حجب WAF/جغرافي ───
-function isBlocked(result) {
+function isBlocked(result, service = 'shared') {
   const s = result.status;
+  // عند دجيزي: 429 = حدّ/تغذية من الخدمة نفسها (وليس حجب البروكسي)،
+  // فلا ندوّر IP الخروج كي تبقى الجلسة على نفس العنوان.
+  if (service === 'djezzy' && s === 429) return false;
   if (s === 407 || s === 429 || s === 522) return true;
   if (s === 403 && typeof result.data === 'string' && /<html|<!doctype/i.test(result.data)) return true;
   if (s === 401 && typeof result.data === 'string' && /proxy|access denied|invalid auth/i.test(result.data)) return true;
@@ -136,8 +177,10 @@ function stickyUsername(user, sid) {
   return `${clean}-sid-${value}`;
 }
 
-function proxyUrl(proxy, sid) {
-  const user = stickyUsername(proxy.username, sid);
+function proxyUrl(proxy, sid, service) {
+  // لاحقة -sid- في اسم المستخدم يدعمها مزوّد ooredoo فقط؛
+  // بالنسبة لدجيزي/غيرها نرسل الاسم كما هو (kookeey/novada يرفضون اللاحقة 407).
+  const user = service === 'ooredoo' ? stickyUsername(proxy.username, sid) : proxy.username;
   const auth = user ? `${encodeURIComponent(user)}:${encodeURIComponent(proxy.password || '')}@` : '';
   return `http://${auth}${proxy.host}:${proxy.port}`;
 }
@@ -249,7 +292,7 @@ function makeHeaders(headers) {
 
 // ─── الطلب الرئيسي عبر البروكسي ───
 async function proxyRequest(env, { method = 'GET', url, headers = {}, body, service = 'shared', sid = null }, timeoutMs = 30000) {
-  const entry = await fetchProxyPool(env, service);
+  const entry = await fetchProxyPool(env, service, sid);
   if (!entry.list.length) throw new Error(`لا يوجد بروكسي نشط للخدمة "${service}" في D1`);
 
   let lastResult = null;
@@ -257,7 +300,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const proxy = attempt === 1
-      ? pickStickyProxy(entry, service)
+      ? pickStickyProxy(entry, service, sid)
       : pickNextProxy(entry, usedIds);
 
     if (!proxy) {
@@ -269,7 +312,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const target = new URL(url);
-      const pUrl = proxyUrl(proxy, sid);
+      const pUrl = proxyUrl(proxy, sid, service);
 
       const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
       console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
@@ -292,7 +335,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
       const result = { status: r.status, data, headers: r.headers, text: r.text, via: 'db-proxy' };
       lastResult = result;
 
-      if (isBlocked(result)) {
+      if (isBlocked(result, service)) {
         markBad(proxy.id);
         markBadD1(env, proxy.id);
         if (attempt < MAX_ATTEMPTS) {
@@ -304,6 +347,7 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
       }
 
       markGoodD1(env, proxy.id);
+      if (service === 'djezzy' && result.status !== 429) stickSid(service, sid, proxy.id);
       await touchLastUsed(env, proxy);
       return result;
     } catch (e) {

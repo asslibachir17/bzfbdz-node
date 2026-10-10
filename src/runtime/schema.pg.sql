@@ -124,3 +124,11 @@ CREATE TABLE IF NOT EXISTS anniversary_config (
 );
 INSERT INTO anniversary_config (key, value) VALUES ('enabled', '1')
 ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at BIGINT NOT NULL DEFAULT 0
+);
+INSERT INTO app_settings (key, value) VALUES ('djezzy_maintenance', '0')
+ON CONFLICT (key) DO NOTHING;

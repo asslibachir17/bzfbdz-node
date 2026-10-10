@@ -123,3 +123,10 @@ CREATE TABLE IF NOT EXISTS anniversary_config (
   value TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO anniversary_config (key, value) VALUES ('enabled', '1');
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at BIGINT NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('djezzy_maintenance', '0');
