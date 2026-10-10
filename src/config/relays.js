@@ -18,6 +18,19 @@ const CLEAN = [
   // AMS / ARN / MXP / HEL / ZRH
   'oo-relay-28', 'oo-relay-29', 'oo-relay-30', 'oo-relay-31',
   'oo-relay-34', 'oo-relay-35', 'oo-relay-38', 'oo-relay-39', 'oo-relay-7',
+  // دفعة ثانية على حساب asslimstph (oo-relay-44..oo-relay-93، 50 ريلاي):
+  // موزعة على 13 منطقة placement مختلفة (FRA/CDG/BRU/AMS/ARN/LHR/MXP/HEL/MAD/…) لتفريق
+  // IPs الخروج وتخفيف ضغط «Request Rejected» من أوريدو. التدوير بالترجيح في http.js
+  // سيتعلّم فشل أيٍّ منها ويُبعده فعلياً.
+  'oo-relay-44', 'oo-relay-45', 'oo-relay-46', 'oo-relay-47', 'oo-relay-48', 'oo-relay-49',
+  'oo-relay-50', 'oo-relay-51', 'oo-relay-52', 'oo-relay-53', 'oo-relay-54', 'oo-relay-55',
+  'oo-relay-56', 'oo-relay-57', 'oo-relay-58', 'oo-relay-59', 'oo-relay-60', 'oo-relay-61',
+  'oo-relay-62', 'oo-relay-63', 'oo-relay-64', 'oo-relay-65', 'oo-relay-66', 'oo-relay-67',
+  'oo-relay-68', 'oo-relay-69', 'oo-relay-70', 'oo-relay-71', 'oo-relay-72', 'oo-relay-73',
+  'oo-relay-74', 'oo-relay-75', 'oo-relay-76', 'oo-relay-77', 'oo-relay-78', 'oo-relay-79',
+  'oo-relay-80', 'oo-relay-81', 'oo-relay-82', 'oo-relay-83', 'oo-relay-84', 'oo-relay-85',
+  'oo-relay-86', 'oo-relay-87', 'oo-relay-88', 'oo-relay-89', 'oo-relay-90', 'oo-relay-91',
+  'oo-relay-92', 'oo-relay-93',
 ];
 
 // MAD محجوبة حالياً (قياس: 0/8) — تبقى كاحتياط فقط، والتدوير سيُبعدها فعلياً.
@@ -34,13 +47,17 @@ const PRIMARY_HOSTS = {
   'oo-relay-alt-2.asslimstph': 'oo-relay-alt-2.asslimstph.workers.dev',
 };
 
+// ريلايات الحساب الثاني (asslimstph): اسم الوركر يقع على worker-asslimstph.workers.dev
+const ASSLIMSTPH_HOSTS = new Set();
+for (let i = 44; i <= 93; i++) ASSLIMSTPH_HOSTS.add(`oo-relay-${i}`);
+
 function urlFor(name) {
   if (name.endsWith('workers.dev')) return 'https://' + name;
-  const host = PRIMARY_HOSTS[name] || `${name}.asslibachiir.workers.dev`;
+  const host = PRIMARY_HOSTS[name] || (ASSLIMSTPH_HOSTS.has(name) ? `${name}.asslimstph.workers.dev` : `${name}.asslibachiir.workers.dev`);
   return 'https://' + host;
 }
 
-// 45 ريلاي: 28 على مناطق نظيفة + 17 احتياط MAD.
+// 95 ريلاي: 78 على مناطق نظيفة + 17 احتياط MAD.
 export const DEFAULT_RELAY_URLS = [...CLEAN, ...FALLBACK_MAD].map(urlFor);
 
 // مفاتيح الريلاي الإنتاجية التي تستحق دمج القائمة المدمجة.
