@@ -15,17 +15,19 @@ const STICKY_SID_TTL_MS = 30 * 60 * 1000;
 const BAD_TTL_MS = 5 * 60 * 1000;
 const LAST_USED_TTL_MS = 30000;
 const D1_WRITE_THROTTLE_MS = 10000; // لا نكتب لنفس البروكسي في D1 إلا كل 10 ثوانٍ
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 6; // تكرارات داخل الطلب الواحد للالتفاف حول IPs البوابة السيئة
 
 // ─── بلاك ليست IP الخروج ───
-// عند حجب المشغِّل لعنوان الخروج (403/HTML وغيرها) نضع IP فعلياً في بلاك ليست
-// ويتجاوزه الاختيار حتى لو عاد نفس البروكسي/نفس الـ IP، ثم يُعاد فقط بعد انتهاء المدة.
+// عند حجب المشغِّل لعنوان الخروج (403/HTML) أو بوابة شبكة سيئة (500 gate)، نضع IP فعلياً
+// في بلاك ليست ويتجاوزه الاختيار حتى لو عاد نفس البروكسي/نفس الـ IP، ثم يُعاد لاحقاً.
 const IPBL_TTL_MS = 15 * 60 * 1000;        // مدة استبعاد الـ IP المحظور
-const AUTH_BAD_TTL_MS = 30 * 60 * 1000;    // 407 = رفض مصادقة البروكسي (ليس IP محظوراً) — مدة أطول
+const AUTH_BAD_BASE_MS = 20 * 1000;        // 407 عابر ← استبعاد قصير متصاعد
+const AUTH_BAD_MAX_MS = 5 * 60 * 1000;
 const IP_PROBE_TTL_MS = 10 * 60 * 1000;    // تخزين egress IP المكتشف مؤقتاً
 const IP_PROBE_TIMEOUT_MS = 8000;
 const IP_ECHO_URL = 'https://api.ipify.org?format=json';
 const IP_BL_WRITE_THROTTLE_MS = 10000;     // لا نكتب لنفس الـ IP في DB إلا كل 10 ثوانٍ
+const MAX_PROXY_CONCURRENCY = 4;           // حد التوازي عبر البروكسي (مصدر 407 عند التجاوز)
 
 // ─── ذاكرة حالة (per-process) ───
 const poolCache = new Map();
@@ -47,6 +49,21 @@ const ipBlacklist = new Map();
 const ipCache = new Map();
 const ipProbeBusy = new Set();  // proxyId — فحص واحد قيد التنفيذ
 const ipBlWriteCache = new Map(); // ip → آخر وقت كتابة في DB (للتخفيف)
+const authFailCount = new Map();  // proxyId → تفشيات 407 متتالية (استبعاد متصاعد)
+
+// ─── حد التوازي عبر البروكسي (يمنع 407 "كثرة الاتصالات" من المزوّد) ───
+let proxyInFlight = 0;
+const proxyWaiters = [];
+function acquireProxySlot() {
+  return new Promise((res) => {
+    if (proxyInFlight < MAX_PROXY_CONCURRENCY) { proxyInFlight++; res(); }
+    else proxyWaiters.push(() => { proxyInFlight++; res(); });
+  });
+}
+function releaseProxySlot() {
+  const w = proxyWaiters.shift();
+  if (w) w(); else proxyInFlight--;
+}
 
 // ─── ترحيل: إضافة عمود blocked_until ───
 let migrationDone = false;
@@ -259,6 +276,16 @@ function isBlocked(result, service = 'shared') {
   return false;
 }
 
+// بوابة شبكة المشغِّل (Gate) تعترض بعض IPs الخروج الدوّارة وترفض HTTPS الأجنبي/العالي
+// بـ «errorMsg: 500 UNKNOWN ... code:5002 ... read reply from gate». هذا ليس رفضاً من
+// الـ API — إنه IP بوابة سيئ: نسودّده ونستمر باتصال جديد (تدوير) حتى نجده سليماً.
+function isGateway500(result) {
+  if (Number(result?.status) !== 500) return false;
+  const d = result?.data ?? result?.text;
+  const t = typeof d === 'string' ? d : (d && typeof d === 'object' ? JSON.stringify(d) : String(d || ''));
+  return /errorMsg:\s*500 UNKNOWN|read reply from gate|code:5002/i.test(t);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ─── بناء URL البروكسي ───
@@ -394,85 +421,108 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
 
   let lastResult = null;
   const usedIds = [];
+  // للـ POST (تفعيل/إرسال) لا نكثر إعادة الإرسال لتجنّب تنشيط مزدوج: محاولة إضافية واحدة فقط.
+  const maxAttempts = method === 'POST' ? Math.min(2, MAX_ATTEMPTS) : MAX_ATTEMPTS;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const proxy = attempt === 1
-      ? pickStickyProxy(entry, service, sid)
-      : pickNextProxy(entry, usedIds);
+  await acquireProxySlot();
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const proxy = attempt === 1
+        ? pickStickyProxy(entry, service, sid)
+        : pickNextProxy(entry, usedIds);
 
-    if (!proxy) {
-      return { status: 0, data: undefined, headers: null, error: `لا يوجد بروكسي نشط للخدمة "${service}"`, via: 'db-proxy' };
-    }
-    if (proxy) usedIds.push(proxy.id);
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const target = new URL(url);
-      const pUrl = proxyUrl(proxy, sid, service);
-
-      const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
-      console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
-      if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0,80)}`);
-
-      if (!r.status) {
-        markBad(proxy.id);
-        markBadD1(env, proxy.id);
-        lastResult = { status: 0, data: undefined, headers: null, text: r.text, error: r.error || 'proxy error', via: 'db-proxy' };
-        if (attempt < MAX_ATTEMPTS) {
-          console.log(`[proxy] attempt ${attempt}/${MAX_ATTEMPTS} error: ${r.error || 'network'} → retry`);
-          await sleep(300 * attempt);
-          continue;
-        }
-        return lastResult;
+      if (!proxy) {
+        return { status: 0, data: undefined, headers: null, error: `لا يوجد بروكسي نشط للخدمة "${service}"`, via: 'db-proxy' };
       }
+      if (proxy) usedIds.push(proxy.id);
 
-      let data;
-      try { data = JSON.parse(r.text); } catch { data = r.text; }
-      const result = { status: r.status, data, headers: r.headers, text: r.text, via: 'db-proxy' };
-      lastResult = result;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const target = new URL(url);
+        const pUrl = proxyUrl(proxy, sid, service);
 
-      if (isBlocked(result, service)) {
-        // 407 = رفض مصادقة البروكسي (حساب/اشتراك) — ليس حجب IP فعلي: مدة حظر أطول.
-        if (result.status === 407) {
-          markBadMs(proxy.id, AUTH_BAD_TTL_MS);
-          markBadD1(env, proxy.id, AUTH_BAD_TTL_MS);
-          console.log(`[proxy] ${proxy.host}:${proxy.port} AUTH rejected (407) → excl ${AUTH_BAD_TTL_MS / 60000}min`);
-        } else {
-          // حجب المشغِّل لعنوان الخروج: حظر للصف + كشف الـ IP الفعلي وإضافته للبلاك ليست.
-          // حتى لو عاد نفس البروكسي لاحقاً وأعطى نفس الـ IP، يتجاوزه الاختيار ويفرض اتصالاً آخر.
-          markBad(proxy.id);
-          markBadD1(env, proxy.id);
-          const ip = await probeEgressIp(env, proxy, service);
-          if (ip) {
-            blacklistIp(ip, `operator block http ${result.status}`);
-            await persistIpBlacklist(env, service, ip, proxy.host, `operator block http ${result.status}`);
+        const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
+        console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
+        if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0, 80)}`);
+
+        if (!r.status) {
+          // عطل شبكة عابر على هذا الاتصال: استبعاد قصير (لا نُسقط التجمع الوحيد طويلاً).
+          markBadMs(proxy.id, AUTH_BAD_BASE_MS);
+          markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
+          lastResult = { status: 0, data: undefined, headers: null, text: r.text, error: r.error || 'proxy error', via: 'db-proxy' };
+          if (attempt < maxAttempts) {
+            console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${r.error || 'network'} → retry`);
+            await sleep(300 * attempt);
+            continue;
           }
+          return lastResult;
         }
-        if (attempt < MAX_ATTEMPTS) {
-          console.log(`[proxy] attempt ${attempt}/${MAX_ATTEMPTS} blocked (${result.status}) → rotating`);
+
+        let data;
+        try { data = JSON.parse(r.text); } catch { data = r.text; }
+        const result = { status: r.status, data, headers: r.headers, text: r.text, via: 'db-proxy' };
+        lastResult = result;
+
+        if (isBlocked(result, service) || isGateway500(result)) {
+          if (result.status === 407) {
+            // 407 = حد مصادقة/اتصالات عابر (خاصة مع التدوير عند الرمي): استبعاد قصير متصاعد،
+            // يُصفَّر عند أي نجاح. لا نسودّد IP هنا (ليست مشكلة IP).
+            const n = (authFailCount.get(proxy.id) || 0) + 1;
+            authFailCount.set(proxy.id, n);
+            const ttl = Math.min(AUTH_BAD_MAX_MS, AUTH_BAD_BASE_MS * Math.pow(2, n - 1));
+            markBadMs(proxy.id, ttl);
+            markBadD1(env, proxy.id, ttl);
+            console.log(`[proxy] ${proxy.host}:${proxy.port} 407 x${n} → excl ${Math.round(ttl / 1000)}s`);
+          } else if (isGateway500(result)) {
+            // بوابة شبكة سيئة على هذا الـ IP: نفحص الـ IP ونضعه في بلاك ليست ثم نحذف
+            // كاش الـ IP حتى لا يعلق البروكسي على عنوان سيئ، ونواصل باتصال/تدوير جديد.
+            const ip = await probeEgressIp(env, proxy, service);
+            if (ip) {
+              blacklistIp(ip, `gateway 500`);
+              await persistIpBlacklist(env, service, ip, proxy.host, 'gateway 500');
+              ipCache.delete('P' + proxy.id);
+            }
+          } else {
+            // حجب المشغِّل لعنوان الخروج: كشف الـ IP الفعلي وإضافته للبلاك ليست + استبعاد
+            // قصير للصف (المزوّد الدوّار يعطي IP جديداً بالاتصال التالي — لا منفعة من حظر طويل).
+            markBadMs(proxy.id, AUTH_BAD_BASE_MS);
+            markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
+            const ip = await probeEgressIp(env, proxy, service);
+            if (ip) {
+              blacklistIp(ip, `operator block http ${result.status}`);
+              await persistIpBlacklist(env, service, ip, proxy.host, `operator block http ${result.status}`);
+              ipCache.delete('P' + proxy.id);
+            }
+          }
+          if (attempt < maxAttempts) {
+            console.log(`[proxy] attempt ${attempt}/${maxAttempts} blocked (${result.status}) → rotating`);
+            await sleep(300 * attempt);
+            continue;
+          }
+          return result;
+        }
+
+        authFailCount.delete(proxy.id);
+        markGoodD1(env, proxy.id);
+        if (service === 'djezzy' && result.status !== 429) stickSid(service, sid, proxy.id);
+        await touchLastUsed(env, proxy);
+        return result;
+      } catch (e) {
+        markBadMs(proxy.id, AUTH_BAD_BASE_MS);
+        markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
+        if (attempt < maxAttempts) {
+          console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${e.message} → retry`);
           await sleep(300 * attempt);
           continue;
         }
-        return result;
+        return { status: 0, data: undefined, headers: null, error: e.message || 'proxy error', via: 'db-proxy' };
+      } finally {
+        clearTimeout(timer);
       }
-
-      markGoodD1(env, proxy.id);
-      if (service === 'djezzy' && result.status !== 429) stickSid(service, sid, proxy.id);
-      await touchLastUsed(env, proxy);
-      return result;
-    } catch (e) {
-      markBad(proxy.id);
-      markBadD1(env, proxy.id);
-      if (attempt < MAX_ATTEMPTS) {
-        console.log(`[proxy] attempt ${attempt}/${MAX_ATTEMPTS} error: ${e.message} → retry`);
-        await sleep(300 * attempt);
-        continue;
-      }
-      return { status: 0, data: undefined, headers: null, error: e.message || 'proxy error', via: 'db-proxy' };
-    } finally {
-      clearTimeout(timer);
     }
+  } finally {
+    releaseProxySlot();
   }
   return lastResult || { status: 0, data: undefined, headers: null, error: 'proxy attempts exhausted', via: 'db-proxy' };
 }
