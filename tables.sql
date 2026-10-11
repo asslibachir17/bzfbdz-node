@@ -88,6 +88,17 @@ CREATE TABLE IF NOT EXISTS proxies (
   blocked_until BIGINT DEFAULT 0  -- حجب مؤقت بعد 429/522/403-Html
 );
 
+-- 7.1) بلاك ليست IPs الفعلية (مستقلة عن صفوف البروكسيات): المفتاح (service, ip)
+CREATE TABLE IF NOT EXISTS proxy_ip_blacklist (
+  service TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  host TEXT,
+  reason TEXT,
+  expires_at BIGINT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (service, ip)
+);
+
 -- 8) المهام المؤجلة
 CREATE TABLE IF NOT EXISTS deferred_tasks (
   id TEXT PRIMARY KEY,

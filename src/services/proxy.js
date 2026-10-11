@@ -17,6 +17,16 @@ const LAST_USED_TTL_MS = 30000;
 const D1_WRITE_THROTTLE_MS = 10000; // لا نكتب لنفس البروكسي في D1 إلا كل 10 ثوانٍ
 const MAX_ATTEMPTS = 3;
 
+// ─── بلاك ليست IP الخروج ───
+// عند حجب المشغِّل لعنوان الخروج (403/HTML وغيرها) نضع IP فعلياً في بلاك ليست
+// ويتجاوزه الاختيار حتى لو عاد نفس البروكسي/نفس الـ IP، ثم يُعاد فقط بعد انتهاء المدة.
+const IPBL_TTL_MS = 15 * 60 * 1000;        // مدة استبعاد الـ IP المحظور
+const AUTH_BAD_TTL_MS = 30 * 60 * 1000;    // 407 = رفض مصادقة البروكسي (ليس IP محظوراً) — مدة أطول
+const IP_PROBE_TTL_MS = 10 * 60 * 1000;    // تخزين egress IP المكتشف مؤقتاً
+const IP_PROBE_TIMEOUT_MS = 8000;
+const IP_ECHO_URL = 'https://api.ipify.org?format=json';
+const IP_BL_WRITE_THROTTLE_MS = 10000;     // لا نكتب لنفس الـ IP في DB إلا كل 10 ثوانٍ
+
 // ─── ذاكرة حالة (per-process) ───
 const poolCache = new Map();
 const stickyByService = new Map();
@@ -31,6 +41,13 @@ const badProxies = new Map();
 const lastUsedCache = new Map();
 const d1WriteCache = new Map(); // proxyId → آخر وقت كتابة في DB (للتخفيف)
 
+// بلاك ليست IPs فعلية (مستقلة عن صفوف البروكسيات): ip → حتى (ms)
+const ipBlacklist = new Map();
+// egress IP المكتشف عبر فحص خفيف ipify لكل بروكسي جاللي (دجيزي): 'P'+proxyId → { ip, until }
+const ipCache = new Map();
+const ipProbeBusy = new Set();  // proxyId — فحص واحد قيد التنفيذ
+const ipBlWriteCache = new Map(); // ip → آخر وقت كتابة في DB (للتخفيف)
+
 // ─── ترحيل: إضافة عمود blocked_until ───
 let migrationDone = false;
 async function ensureMigration(env) {
@@ -39,6 +56,76 @@ async function ensureMigration(env) {
     await env.DB.prepare('ALTER TABLE proxies ADD COLUMN blocked_until INTEGER DEFAULT 0').run();
   } catch {}
   migrationDone = true;
+}
+
+// ─── ترحيل: جدول بلاك ليست IPs ───
+let ipTableDone = false;
+async function ensureIpBlacklistTable(env) {
+  if (ipTableDone) return;
+  try {
+    // DDL متوافق مع SQLite/D1 وPostgreSQL (يترجمه محوّل toPgSql عند الحاجة)
+    await env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS proxy_ip_blacklist (service TEXT NOT NULL, ip TEXT NOT NULL, host TEXT, reason TEXT, expires_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (service, ip))'
+    ).run();
+  } catch {}
+  ipTableDone = true;
+}
+
+// ─── كشف IP الخروج الحقيقي عبر فحص خفيف من خلال البروكسي ───
+// مخصّص لدجيزي: لربط الحجب بـ IP فعلي (خاصة المزوّدات الدوّارة)، مع تخزين مؤقت.
+async function probeEgressIp(env, proxy, service, t = Date.now()) {
+  if (service !== 'djezzy' || !proxy || !proxy.id) return null;
+  const cached = ipCache.get('P' + proxy.id);
+  if (cached && cached.until > t) return cached.ip;
+  if (ipProbeBusy.has(proxy.id)) return cached ? cached.ip : null;
+  ipProbeBusy.add(proxy.id);
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), IP_PROBE_TIMEOUT_MS);
+    const pUrl = proxyUrl(proxy, null, service);
+    const r = await httpViaProxy(pUrl, IP_ECHO_URL, { method: 'GET', headers: {} }, ctrl.signal);
+    clearTimeout(timer);
+    let ip = null;
+    if (r && r.status === 200 && r.text) {
+      try { const j = JSON.parse(r.text); ip = (j && j.ip) || null; } catch { ip = null; }
+    }
+    if (ip) ipCache.set('P' + proxy.id, { ip, until: t + IP_PROBE_TTL_MS });
+    return ip;
+  } catch {
+    return cached ? cached.ip : null;
+  } finally {
+    ipProbeBusy.delete(proxy.id);
+  }
+}
+
+// هل الـ IP المعروف لهذا البروكسي موجود في بلاك ليست؟
+function isProxyIpBlocked(proxy, t = Date.now()) {
+  if (!proxy || !proxy.id) return false;
+  const c = ipCache.get('P' + proxy.id);
+  if (!c || !c.ip) return false;
+  return (ipBlacklist.get(c.ip) || 0) > t;
+}
+
+// بلاك ليست في الذاكرة + سطر سجل
+function blacklistIp(ip, reason, t = Date.now()) {
+  ipBlacklist.set(ip, t + IPBL_TTL_MS);
+  console.log(`[proxy] BLACKLIST ip=${ip} reason=${reason} until=${new Date(t + IPBL_TTL_MS).toISOString()}`);
+}
+
+// بلاك ليست مُثبَّتة في DB (عند إقلاع جديد تظل محفوظة حتى انتهاء المدة)
+async function persistIpBlacklist(env, service, ip, host, reason) {
+  if (!ip) return;
+  const last = ipBlWriteCache.get(ip) || 0;
+  const now = Date.now();
+  if (now - last < IP_BL_WRITE_THROTTLE_MS) return;
+  ipBlWriteCache.set(ip, now);
+  const until = now + IPBL_TTL_MS;
+  try {
+    await ensureIpBlacklistTable(env);
+    await env.DB.prepare('DELETE FROM proxy_ip_blacklist WHERE service = ? AND ip = ?').bind(service, ip).run();
+    await env.DB.prepare('INSERT INTO proxy_ip_blacklist (service, ip, host, reason, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(service, ip, host || null, reason || '', until, now).run();
+  } catch {}
 }
 
 // ─── جلب البروكسيات من DB (مع تصفية المحجوبة) ───
@@ -104,16 +191,20 @@ function markBad(proxyId, t = Date.now()) {
   badProxies.set(proxyId, t + BAD_TTL_MS);
 }
 
+function markBadMs(proxyId, ttlMs, t = Date.now()) {
+  badProxies.set(proxyId, t + ttlMs);
+}
+
 // ─── DB writes مع throttle (تقليل الضغط) ───
 function shouldWriteD1(proxyId, t = Date.now()) {
   const last = d1WriteCache.get(proxyId) || 0;
   return (t - last) >= D1_WRITE_THROTTLE_MS;
 }
 
-function markBadD1(env, proxyId) {
+function markBadD1(env, proxyId, ttlMs = BAD_TTL_MS) {
   if (!proxyId || !shouldWriteD1(proxyId)) return;
   d1WriteCache.set(proxyId, Date.now());
-  const until = Date.now() + BAD_TTL_MS;
+  const until = Date.now() + ttlMs;
   try {
     // .run() يُرجع وعداً؛ بدون .catch() يصبح رفضه unhandledRejection يسقط العملية.
     env.DB.prepare('UPDATE proxies SET blocked_until = ? WHERE id = ?')
@@ -136,21 +227,22 @@ function pickStickyProxy(entry, service, sid = null, t = Date.now()) {
     const pin = sidSticky.get(`${service}:${sid}`);
     if (pin && pin.until > t) {
       const same = entry.list.find((p) => String(p.id) === String(pin.proxyId));
-      if (same && !isProxyBad(same.id, t)) return same;
+      if (same && !isProxyBad(same.id, t) && !isProxyIpBlocked(same, t)) return same;
     }
   }
   const sticky = stickyByService.get(service);
   if (sticky && t - sticky.pickedAt < STICKY_TTL_MS) {
     const same = entry.list.find((p) => String(p.id) === String(sticky.proxyId));
-    if (same && !isProxyBad(same.id, t)) return same;
+    if (same && !isProxyBad(same.id, t) && !isProxyIpBlocked(same, t)) return same;
   }
-  const proxy = entry.list.find((p) => !isProxyBad(p.id, t)) || entry.list[0];
+  const proxy = entry.list.find((p) => !isProxyBad(p.id, t) && !isProxyIpBlocked(p, t)) || entry.list[0];
   if (proxy) stickyByService.set(service, { proxyId: proxy.id, pickedAt: t });
   return proxy;
 }
 
 function pickNextProxy(entry, excludeIds, t = Date.now()) {
-  return entry.list.find((p) => !isProxyBad(p.id, t) && !excludeIds.includes(p.id))
+  return entry.list.find((p) => !isProxyBad(p.id, t) && !isProxyIpBlocked(p, t) && !excludeIds.includes(p.id))
+    || entry.list.find((p) => !isProxyBad(p.id, t) && !isProxyIpBlocked(p, t))
     || entry.list.find((p) => !excludeIds.includes(p.id))
     || entry.list[0];
 }
@@ -295,6 +387,11 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
   const entry = await fetchProxyPool(env, service, sid);
   if (!entry.list.length) throw new Error(`لا يوجد بروكسي نشط للخدمة "${service}" في D1`);
 
+  // تجمع ميت بالكامل (كلها محظورة/بلاك ليست) → لا نضربها بإعادة محاولات، ننهي فوراً
+  if (!entry.list.some((p) => !isProxyBad(p.id) && !isProxyIpBlocked(p))) {
+    return { status: 0, data: undefined, headers: null, error: `بروكسيات "${service}" كلها محظورة`, via: 'db-proxy' };
+  }
+
   let lastResult = null;
   const usedIds = [];
 
@@ -336,8 +433,22 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
       lastResult = result;
 
       if (isBlocked(result, service)) {
-        markBad(proxy.id);
-        markBadD1(env, proxy.id);
+        // 407 = رفض مصادقة البروكسي (حساب/اشتراك) — ليس حجب IP فعلي: مدة حظر أطول.
+        if (result.status === 407) {
+          markBadMs(proxy.id, AUTH_BAD_TTL_MS);
+          markBadD1(env, proxy.id, AUTH_BAD_TTL_MS);
+          console.log(`[proxy] ${proxy.host}:${proxy.port} AUTH rejected (407) → excl ${AUTH_BAD_TTL_MS / 60000}min`);
+        } else {
+          // حجب المشغِّل لعنوان الخروج: حظر للصف + كشف الـ IP الفعلي وإضافته للبلاك ليست.
+          // حتى لو عاد نفس البروكسي لاحقاً وأعطى نفس الـ IP، يتجاوزه الاختيار ويفرض اتصالاً آخر.
+          markBad(proxy.id);
+          markBadD1(env, proxy.id);
+          const ip = await probeEgressIp(env, proxy, service);
+          if (ip) {
+            blacklistIp(ip, `operator block http ${result.status}`);
+            await persistIpBlacklist(env, service, ip, proxy.host, `operator block http ${result.status}`);
+          }
+        }
         if (attempt < MAX_ATTEMPTS) {
           console.log(`[proxy] attempt ${attempt}/${MAX_ATTEMPTS} blocked (${result.status}) → rotating`);
           await sleep(300 * attempt);
