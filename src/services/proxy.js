@@ -421,8 +421,10 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
 
   let lastResult = null;
   const usedIds = [];
-  // للـ POST (تفعيل/إرسال) لا نكثر إعادة الإرسال لتجنّب تنشيط مزدوج: محاولة إضافية واحدة فقط.
-  const maxAttempts = method === 'POST' ? Math.min(2, MAX_ATTEMPTS) : MAX_ATTEMPTS;
+  // للـ POST (تفعيل/إرسال): لا نعيد إلا عند فشل طبقة-النقل (407/بوابة-500/522) لأن الخادم
+  // لم يستلم أصلاً؛ أي ردّ HTTP حقيقي (401/403/404/... مرّ من الخادم) يعود مباشرة
+  // بدون إعادة إرسال — تحاشياً للتنشيط المزدوج.
+  const maxAttempts = method === 'POST' ? Math.min(3, MAX_ATTEMPTS) : MAX_ATTEMPTS;
 
   await acquireProxySlot();
   try {
@@ -495,8 +497,12 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
               ipCache.delete('P' + proxy.id);
             }
           }
-          if (attempt < maxAttempts) {
-            console.log(`[proxy] attempt ${attempt}/${maxAttempts} blocked (${result.status}) → rotating`);
+          // للـ POST: إعادة التدوير فقط عند فشل طبقة-النقل (لم يبلغ الخادم) —
+          // 407 ردّ البروكسي قبل إرسال الطلب، 522/بوابة-500 اعتراض قبل التطبيق.
+          const transportFault = result.status === 407 || result.status === 522 || isGateway500(result);
+          const canRotate = method !== 'POST' || transportFault;
+          if (canRotate && attempt < maxAttempts) {
+            console.log(`[proxy] attempt ${attempt}/${maxAttempts} blocked (${result.status}) → rotating${method === 'POST' ? ' (transport-only)' : ''}`);
             await sleep(300 * attempt);
             continue;
           }
