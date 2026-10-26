@@ -18,7 +18,7 @@ function normalizeArabic(s) {
 
 // كلمات مفتاحية لكل نوع عملية (البادئة في الـ payload)
 const ACTION_KEYWORDS = {
-  activate2G: ['تفعيل 2', '2go', '2 جيغا', '2 جيجا', 'جيغا', 'جيجا', 'giga', 'تفعيل', 'ال2 جيغا', 'ال2 جيجا'],
+  activate2G: ['تفعيل 2', '2go', '2 جيغا', '2 جيجا', 'جيغا', 'جيجا', 'giga', 'ال2 جيغا', 'ال2 جيجا'],
   infosimdjezzy: ['معلومات', 'الشريحه', 'الشريحة', 'معلومات الشريحه', 'حسابي', 'الحساب', 'معلومه', 'info'],
   startinvite: ['دعوه', 'دعوة', 'ادعو', 'ادعوا', 'دعوه صديق', 'دعوة صديق', 'invite'],
   srv1: ['انترنت', 'انترنيت', 'باقه', 'باقة', '4 جيغا', '4 جيجا', '70 دج', '4g', '4go', 'باقة انترنت'],
@@ -139,4 +139,28 @@ export function buildFallbackOptions(phoneNumber, operator) {
     return [p('djoffers'), p('activate2G'), p('infosimdjezzy'), p('startinvite'), p('srv1')];
   }
   return null;
+}
+
+// ===========================================================================
+// كشف رسائل الشكر بمختلف الصياغات (عربية/دارجة/فرنسية/إنجليزية)
+// ===========================================================================
+const THANKS_TOKENS = [
+  'شكرا', 'شكرن', 'مشكور', 'مشكوره', 'مشكورين', 'الشكر', 'شكرا جزيلا', 'شكرا لك',
+  'ثانكس', 'ثانكيو', 'تانكيو', 'ثانك يو', 'تنكس', 'ثنكس', 'سنكس', 'ثانكس بزاف',
+  'ميغسي', 'ميرسي', 'مرسي', 'مغسي', 'ميغسي بزاف', 'ميرسي بوكو',
+  'merci', 'merci beaucoup', 'thanks', 'thank you', 'thankyou', 'thx', 'tnx', 'thanx',
+  'chokran', 'choukran', 'shukran', 'chokrane',
+];
+
+export function isThanksText(userText) {
+  const text = normalizeArabic(userText);
+  if (!text) return false;
+  const words = text.split(' ').filter(Boolean);
+  if (words.length > 4) return false;
+  for (const tk of THANKS_TOKENS) {
+    const n = normalizeArabic(tk);
+    if (!n) continue;
+    if (text === n || text.includes(n)) return true;
+  }
+  return false;
 }

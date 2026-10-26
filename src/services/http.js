@@ -40,9 +40,14 @@ export async function httpRequest(env, opts) {
     sid = null,
     timeoutMs = 30000,
     directFirst = false, // جرّب الاتصال المباشر أولاً (أسرع)، والبروكسي احتياط عند الفشل
+    proxyOnly = false, // الخدمة تُخدَم حصراً عبر بروكسي DB (مثل دجيزي): لا relay/مباشر عند فشله
   } = opts;
 
   const relays = relayKey ? relayList(env[relayKey], env[relayKey + '_LIST'], isProductionRelayKey(relayKey)) : null;
+
+  // دجيزي متاح فقط من عناوين جزائرية (كأنفاق db-proxy)؛ relay/المباشر محجوبان جغرافياً
+  // فيستهلكان ثوانيَ ثم يفشلان → نعتبر كل طلبات دجيزي "proxyOnly" لتفادي هذا التأخير.
+  const effectiveProxyOnly = proxyOnly || proxyService === 'djezzy';
 
   let payload = body;
   const hdrs = { ...headers };
@@ -79,8 +84,12 @@ export async function httpRequest(env, opts) {
       const r = await proxyRequest(env, { method, url, headers: hdrs, body: payload, service: proxyService, sid }, timeoutMs);
       if (r.status !== 0) return r;
       console.log(`[http] db-proxy failed (status 0): ${r.error || 'unknown'} → fallback`);
+      // خدمة تُخدَم حصراً عبر بروكسي DB: لا فائدة من relay/مباشر (محجوب جغرافياً)
+      // وكلاهما يستهلك ثوانيَ ثم يفشل → نعيد الفشل فوراً بدل إطالة الطلب.
+      if (effectiveProxyOnly) return r;
     } catch (e) {
       console.log(`[http] db-proxy failed: ${e.message || e} → fallback`);
+      if (effectiveProxyOnly) return { status: 0, data: undefined, headers: null, error: e.message || 'proxy error', via: 'db-proxy' };
     }
   }
 
@@ -207,8 +216,14 @@ function isOoredooRejected(data) {
 function isRelayInfrastructureFailure(status, data) {
   const s = Number(status) || 0;
   if (s === 0) return true;
-  if (s >= 520 && s <= 526) return true;
+  // 429 = ضغط/حد الحصة على الريلاي نفسه (مثلاً Cloudflare Workers يومي: "error code: 1027").
+  // 5xx = خطأ Cloudflare (520-526) أو انهيار الريلاي/upstream. كلها عابرة على مستوى
+  // الريلاي لا الخدمة، فننتقل لريلاي آخر بدل إرجاع الفشل للمستخدم.
+  if (s === 429) return true;
+  if (s >= 500 && s <= 599) return true;
   if (typeof data === 'string' && /<html|<!doctype/i.test(data)) return true;
+  // Cloudflare يُعيد نصاً عادياً (بلا HTML) عند نفاد حصة الوركر، نحو "error code: 1027".
+  if (typeof data === 'string' && /error code:?\s*\d{4}/i.test(data)) return true;
   return false;
 }
 
@@ -255,8 +270,14 @@ async function relayRequest(env, relays, spec, timeoutMs) {
       const text = await res.text();
       hasResult = true;
       let payload = parseText(text);
+      // خطأ على مستوى الريلاي نفسه أُعيد كـ JSON {error} (مثل 401 غير مُصرّح، أو
+      // أي خطأ داخلي في الوركر) → نجرّب ريلاياً آخر بدل إرجاعه للمستخدم.
       if (payload && payload.error) {
-        return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
+        console.log(`[http] relay ${r.split('/')[2]} error payload (status=${res.status}) → try next`);
+        markRejected(r);
+        if (sid && sidRelay.get(sid) === r) sidRelay.delete(sid);
+        await sleep(150);
+        continue;
       }
       if (payload && typeof payload === 'object' && 'status' in payload) {
         const status = Number(payload.status) || res.status;
@@ -295,6 +316,15 @@ async function relayRequest(env, relays, spec, timeoutMs) {
           via: 'relay',
         };
       }
+      // ردّ غير مطابق للعقد (نص/JSON بلا status): إن كان خطأ بنية تحتية (429 نفاد
+      // حصة الوركر، 5xx، أو نص Cloudflare) ننتقل لريلاي آخر بدل إرجاعه.
+      if (isRelayInfrastructureFailure(res.status, typeof payload === 'string' ? payload : text)) {
+        console.log(`[http] relay ${r.split('/')[2]} non-standard infra failure (status=${res.status}) → try next`);
+        markRejected(r);
+        if (sid && sidRelay.get(sid) === r) sidRelay.delete(sid);
+        await sleep(150);
+        continue;
+      }
       return { status: res.status, data: payload, headers: res.headers, text, via: 'relay' };
     } catch (e) {
       markRejected(r);
@@ -332,7 +362,10 @@ async function relayRequest(env, relays, spec, timeoutMs) {
         };
       }
       if (payload && payload.error) {
-        return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
+        if (!isRelayInfrastructureFailure(res.status, typeof payload.error === 'string' ? payload.error : text)) {
+          return { status: res.status === 200 ? 502 : res.status, data: payload, headers: res.headers, text, via: 'relay' };
+        }
+        console.log(`[http] retry relay ${r2.split('/')[2]} infra error payload → give up after cooldown`);
       }
     } catch (e) {
       console.log(`[http] retry relay ${r2.split('/')[2]} error: ${e.message || e}`);

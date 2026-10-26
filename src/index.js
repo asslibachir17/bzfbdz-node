@@ -472,7 +472,9 @@ export default {
       const otpD = getLoadGuard('otp-djezzy', env).getStats();
       const otpO = getLoadGuard('otp-ooredoo', env).getStats();
       const wb = getLoadGuard('webhook', env).getStats();
-      return new Response(JSON.stringify({ djezzy: otpD, ooredoo: otpO, webhook: wb }), {
+      let proxy = null;
+      try { proxy = (await import('./services/proxy.js')).__proxyDebug(); } catch {}
+      return new Response(JSON.stringify({ djezzy: otpD, ooredoo: otpO, webhook: wb, proxy }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

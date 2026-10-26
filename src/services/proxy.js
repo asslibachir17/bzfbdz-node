@@ -8,7 +8,7 @@ import zlib from 'node:zlib';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // ─── ثوابت ───
-const POOL_SIZE = 3;
+const POOL_SIZE = 8;
 const POOL_TTL_MS = 60000;
 const STICKY_TTL_MS = 5 * 60 * 1000;
 const STICKY_SID_TTL_MS = 30 * 60 * 1000;
@@ -16,6 +16,7 @@ const BAD_TTL_MS = 5 * 60 * 1000;
 const LAST_USED_TTL_MS = 30000;
 const D1_WRITE_THROTTLE_MS = 10000; // لا نكتب لنفس البروكسي في D1 إلا كل 10 ثوانٍ
 const MAX_ATTEMPTS = 6; // تكرارات داخل الطلب الواحد للالتفاف حول IPs البوابة السيئة
+const DJEZZY_429_BAD_MS = 60 * 1000; // دجيزي: عند 429 نستبعد عنوان الخروج الحالي دقيقة ثم ندوّر
 
 // ─── بلاك ليست IP الخروج ───
 // عند حجب المشغِّل لعنوان الخروج (403/HTML) أو بوابة شبكة سيئة (500 gate)، نضع IP فعلياً
@@ -23,15 +24,21 @@ const MAX_ATTEMPTS = 6; // تكرارات داخل الطلب الواحد لل�
 const IPBL_TTL_MS = 15 * 60 * 1000;        // مدة استبعاد الـ IP المحظور
 const AUTH_BAD_BASE_MS = 20 * 1000;        // 407 عابر ← استبعاد قصير متصاعد
 const AUTH_BAD_MAX_MS = 5 * 60 * 1000;
+const TRANSIENT_BAD_MS = 8 * 1000;         // عطل شبكة عابر (status=0) ← استبعاد في الذاكرة فقط، قصير
+const ATTEMPT_TIMEOUT_MS = Number(process.env.PROXY_ATTEMPT_TIMEOUT_MS) || 12000; // مهلة كل محاولة واحدة (لا تعلّق خانة 60ث)
 const IP_PROBE_TTL_MS = 10 * 60 * 1000;    // تخزين egress IP المكتشف مؤقتاً
 const IP_PROBE_TIMEOUT_MS = 8000;
 const IP_ECHO_URL = 'https://api.ipify.org?format=json';
 const IP_BL_WRITE_THROTTLE_MS = 10000;     // لا نكتب لنفس الـ IP في DB إلا كل 10 ثوانٍ
-const MAX_PROXY_CONCURRENCY = 4;           // حد التوازي عبر البروكسي (مصدر 407 عند التجاوز)
+const MAX_PROXY_CONCURRENCY = Number(process.env.PROXY_MAX_PER_IP) || 6;   // حد التوازي لكل عنوان خروج (per-IP)
+const MAX_PROXY_CONCURRENCY_TOTAL = Number(process.env.PROXY_MAX_TOTAL) || 48; // سقف عام للأمان
 
 // ─── ذاكرة حالة (per-process) ───
 const poolCache = new Map();
 const stickyByService = new Map();
+// توزيع دجيزي بالتناوب (round-robin) على كل عناوين الخروج الصحية: كل جلسة جديدة تأخذ
+// العنوان التالي، فلا يتركّز الحمل على IP واحد ولا يقع ضغط/حدّ (429) على عنوان بعينه.
+const rrCursor = new Map(); // service -> index
 // تثبيت بروكسي بعينه لكل (خدمة، sid): تُخرج OTP/التوكين/الفعيل من نفس IP
 // (بدون لمس اسم المستخدم — بعض المزوّدين كـ kookeey يرفضون لاحقة -sid-).
 const sidSticky = new Map(); // `${service}:${sid}` -> { proxyId, until }
@@ -51,18 +58,55 @@ const ipProbeBusy = new Set();  // proxyId — فحص واحد قيد التنف
 const ipBlWriteCache = new Map(); // ip → آخر وقت كتابة في DB (للتخفيف)
 const authFailCount = new Map();  // proxyId → تفشيات 407 متتالية (استبعاد متصاعد)
 
-// ─── حد التوازي عبر البروكسي (يمنع 407 "كثرة الاتصالات" من المزوّد) ───
-let proxyInFlight = 0;
+// ─── حد التوازي عبر البروكسي (per-IP) ───
+// كان الحد عاماً (4) بينما لدينا 4 عناوين خروج مستقلة → خنق واصطفاف عميق (waiting ~95).
+// الحد الآن لكل عنوان خروج (proxy id) + سقف عام، فيتضاعف الإنتاج مع الحفاظ على سلامة كل IP.
+let proxyInFlightTotal = 0;
+const proxyInFlightByKey = new Map(); // key(proxy id / 'shared') -> count
 const proxyWaiters = [];
-function acquireProxySlot() {
-  return new Promise((res) => {
-    if (proxyInFlight < MAX_PROXY_CONCURRENCY) { proxyInFlight++; res(); }
-    else proxyWaiters.push(() => { proxyInFlight++; res(); });
+const PROXY_SLOT_MAX_WAIT_MS = 90000;
+function _slotCount(key) { return proxyInFlightByKey.get(key) || 0; }
+function _slotCanAcquire(key) {
+  return proxyInFlightTotal < MAX_PROXY_CONCURRENCY_TOTAL && _slotCount(key) < MAX_PROXY_CONCURRENCY;
+}
+function _slotGrant(key, entry) {
+  entry.done = true;
+  if (entry.timer) clearTimeout(entry.timer);
+  proxyInFlightTotal++;
+  proxyInFlightByKey.set(key, _slotCount(key) + 1);
+  entry.resolve();
+}
+function acquireProxySlot(key = 'shared', maxWaitMs = PROXY_SLOT_MAX_WAIT_MS) {
+  return new Promise((resolve) => {
+    if (_slotCanAcquire(key)) { proxyInFlightTotal++; proxyInFlightByKey.set(key, _slotCount(key) + 1); return resolve(); }
+    const entry = { key, resolve, timer: null, done: false };
+    // مهلة أمان: لا نسمح لخانة أن تعلق للأبد (لو تسرّبت بسبب طلب شارد) فنمنحها قسراً.
+    entry.timer = setTimeout(() => {
+      if (entry.done) return;
+      const i = proxyWaiters.indexOf(entry);
+      if (i >= 0) proxyWaiters.splice(i, 1);
+      console.log(`[proxy] slot force-acquired (${key}) after ${Math.round(maxWaitMs / 1000)}s`);
+      _slotGrant(key, entry);
+    }, maxWaitMs);
+    proxyWaiters.push(entry);
   });
 }
-function releaseProxySlot() {
-  const w = proxyWaiters.shift();
-  if (w) w(); else proxyInFlight--;
+function releaseProxySlot(key = 'shared') {
+  proxyInFlightTotal = Math.max(0, proxyInFlightTotal - 1);
+  const c = _slotCount(key);
+  if (c <= 1) proxyInFlightByKey.delete(key); else proxyInFlightByKey.set(key, c - 1);
+  // امنح خانة واحدة لمن ينتظر ولديه سعة متاحة (حفاظاً على السقف العام).
+  for (let i = 0; i < proxyWaiters.length; i++) {
+    const entry = proxyWaiters[i];
+    if (!entry.done && _slotCanAcquire(entry.key)) {
+      proxyWaiters.splice(i, 1);
+      _slotGrant(entry.key, entry);
+      return;
+    }
+  }
+}
+export function __proxyDebug() {
+  return { inflight: proxyInFlightTotal, waiting: proxyWaiters.length, max: MAX_PROXY_CONCURRENCY, maxTotal: MAX_PROXY_CONCURRENCY_TOTAL };
 }
 
 // ─── ترحيل: إضافة عمود blocked_until ───
@@ -100,7 +144,7 @@ async function probeEgressIp(env, proxy, service, t = Date.now()) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), IP_PROBE_TIMEOUT_MS);
     const pUrl = proxyUrl(proxy, null, service);
-    const r = await httpViaProxy(pUrl, IP_ECHO_URL, { method: 'GET', headers: {} }, ctrl.signal);
+    const r = await httpViaProxy(pUrl, IP_ECHO_URL, { method: 'GET', headers: {} }, ctrl.signal, IP_PROBE_TIMEOUT_MS);
     clearTimeout(timer);
     let ip = null;
     if (r && r.status === 200 && r.text) {
@@ -240,12 +284,23 @@ function markGoodD1(env, proxyId) {
 
 // ─── اختيار البروكسي ───
 function pickStickyProxy(entry, service, sid = null, t = Date.now()) {
+  // 1) تثبيت الجلسة لكل (خدمة، sid): يبقى OTP/التوكين/الفعيل لنفس الرقم على نفس IP.
   if (service && sid) {
     const pin = sidSticky.get(`${service}:${sid}`);
     if (pin && pin.until > t) {
       const same = entry.list.find((p) => String(p.id) === String(pin.proxyId));
       if (same && !isProxyBad(same.id, t) && !isProxyIpBlocked(same, t)) return same;
     }
+  }
+  // 2) دجيزي: نوزّع الجلسات الجديدة بالتناوب على كل عناوين الخروج الصحية (round-robin)
+  //    بدل تثبيتها على عنوان واحد لخمس دقائق — لتقليل الضغط والحدّ (429) لكل IP.
+  if (service === 'djezzy') {
+    const healthy = entry.list.filter((p) => !isProxyBad(p.id, t) && !isProxyIpBlocked(p, t));
+    const pool = healthy.length ? healthy : entry.list;
+    if (!pool.length) return null;
+    const i = (rrCursor.get(service) || 0) % pool.length;
+    rrCursor.set(service, i + 1);
+    return pool[i];
   }
   const sticky = stickyByService.get(service);
   if (sticky && t - sticky.pickedAt < STICKY_TTL_MS) {
@@ -319,62 +374,73 @@ async function touchLastUsed(env, proxy) {
 
 // ─── ترانسبورت Node: https عبر بروكسي CONNECT ───
 // يعيد { status, headers, text } مع فك ضغط gzip/deflate تلقائياً.
-function httpViaProxy(pUrl, targetUrl, { method, headers, body }, signal) {
+// مهم: نضمن أن الوعد يُحسم دائماً (نجاح/خطأ/مهلة/إلغاء) حتى لا تتسرّب خانات التوازي
+// (proxyInFlight) وتُجمّد كل طلبات البروكسي اللاحقة. لا نعتمد على signal في https.request
+// (لا يُدمّر المقبس العالق أثناء CONNECT دائماً)، بل نُدمّر الطلب/الوكيل بأنفسنا.
+function httpViaProxy(pUrl, targetUrl, { method, headers, body }, signal, timeoutMs = 30000) {
   return new Promise((resolve) => {
     let settled = false;
-    const agent = new HttpsProxyAgent(pUrl);
-    let u;
-    try {
-      u = new URL(targetUrl);
-    } catch (e) {
-      return resolve({ status: 0, headers: null, text: '', error: 'bad target url' });
-    }
-    const reqHeaders = { ...(headers || {}) };
-    if (body !== undefined && body !== null) {
-      if (!reqHeaders['Content-Length']) {
-        reqHeaders['Content-Length'] = Buffer.byteLength(String(body));
-      }
-    }
-    const req = https.request(
-      {
-        method: method || 'GET',
-        hostname: u.hostname,
-        port: u.port || 443,
-        path: u.pathname + u.search,
-        headers: reqHeaders,
-        agent,
-        servername: u.hostname,
-        signal,
-      },
-      (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          if (settled) return;
-          settled = true;
-          try {
-            agent.destroy();
-          } catch {}
-          let buf = Buffer.concat(chunks);
-          const enc = String(res.headers?.['content-encoding'] || '').toLowerCase();
-          try {
-            if (enc === 'gzip') buf = zlib.gunzipSync(buf);
-            else if (enc === 'deflate') buf = zlib.inflateSync(buf);
-            else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
-          } catch {}
-          const text = buf.toString('utf8');
-          resolve({ status: res.statusCode || 0, headers: makeHeaders(res.headers), text });
-        });
-      }
-    );
-    req.on('error', (e) => {
+    let agent = null;
+    let req = null;
+    let hardTimer = null;
+    const finish = (obj) => {
       if (settled) return;
       settled = true;
-      try {
-        agent.destroy();
-      } catch {}
-      resolve({ status: 0, headers: null, text: '', error: (e && e.message) || 'proxy request error' });
-    });
+      if (hardTimer) clearTimeout(hardTimer);
+      try { if (signal && onAbort) signal.removeEventListener('abort', onAbort); } catch {}
+      try { if (req) req.destroy(); } catch {}
+      try { if (agent) agent.destroy(); } catch {}
+      resolve(obj);
+    };
+    const onAbort = () => finish({ status: 0, headers: null, text: '', error: 'aborted/timeout' });
+    let u;
+    try { u = new URL(targetUrl); } catch { return finish({ status: 0, headers: null, text: '', error: 'bad target url' }); }
+    try { agent = new HttpsProxyAgent(pUrl); } catch { return finish({ status: 0, headers: null, text: '', error: 'bad proxy url' }); }
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    // مهلة صلبة داخلية (أعلى قليلاً من مهلة الطلب): شبكة أمان تضمن الحسم دائماً.
+    const ms = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs + 5000 : 40000;
+    hardTimer = setTimeout(onAbort, ms);
+    const reqHeaders = { ...(headers || {}) };
+    if (body !== undefined && body !== null && !reqHeaders['Content-Length']) {
+      reqHeaders['Content-Length'] = Buffer.byteLength(String(body));
+    }
+    try {
+      req = https.request(
+        {
+          method: method || 'GET',
+          hostname: u.hostname,
+          port: u.port || 443,
+          path: u.pathname + u.search,
+          headers: reqHeaders,
+          agent,
+          servername: u.hostname,
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('error', (e) => finish({ status: 0, headers: null, text: '', error: (e && e.message) || 'response error' }));
+          res.on('aborted', () => finish({ status: 0, headers: null, text: '', error: 'response aborted' }));
+          res.on('end', () => {
+            let buf = Buffer.concat(chunks);
+            const enc = String(res.headers?.['content-encoding'] || '').toLowerCase();
+            try {
+              if (enc === 'gzip') buf = zlib.gunzipSync(buf);
+              else if (enc === 'deflate') buf = zlib.inflateSync(buf);
+              else if (enc === 'br') buf = zlib.brotliDecompressSync(buf);
+            } catch {}
+            finish({ status: res.statusCode || 0, headers: makeHeaders(res.headers), text: buf.toString('utf8') });
+          });
+        }
+      );
+    } catch (e) {
+      return finish({ status: 0, headers: null, text: '', error: (e && e.message) || 'request setup error' });
+    }
+    req.on('error', (e) => finish({ status: 0, headers: null, text: '', error: (e && e.message) || 'proxy request error' }));
+    req.on('timeout', () => finish({ status: 0, headers: null, text: '', error: 'socket timeout' }));
+    try { req.setTimeout(ms, () => { try { req.destroy(); } catch {} }); } catch {}
     if (body !== undefined && body !== null) req.write(String(body));
     req.end();
   });
@@ -414,8 +480,9 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
   const entry = await fetchProxyPool(env, service, sid);
   if (!entry.list.length) throw new Error(`لا يوجد بروكسي نشط للخدمة "${service}" في D1`);
 
-  // تجمع ميت بالكامل (كلها محظورة/بلاك ليست) → لا نضربها بإعادة محاولات، ننهي فوراً
-  if (!entry.list.some((p) => !isProxyBad(p.id) && !isProxyIpBlocked(p))) {
+  // لا ننهي إلا إذا كانت كل العناوين محظورة فعلياً (بلاك ليست IP) لأن إعادة المحاولة
+  // بلا فائدة. أما الاستبعاد المؤقت (markBadMs بعد عطل شبكة عابر) فلا يمنع المحاولة.
+  if (entry.list.every((p) => isProxyIpBlocked(p))) {
     return { status: 0, data: undefined, headers: null, error: `بروكسيات "${service}" كلها محظورة`, via: 'db-proxy' };
   }
 
@@ -425,110 +492,126 @@ async function proxyRequest(env, { method = 'GET', url, headers = {}, body, serv
   // لم يستلم أصلاً؛ أي ردّ HTTP حقيقي (401/403/404/... مرّ من الخادم) يعود مباشرة
   // بدون إعادة إرسال — تحاشياً للتنشيط المزدوج.
   const maxAttempts = method === 'POST' ? Math.min(3, MAX_ATTEMPTS) : MAX_ATTEMPTS;
+  const deadline = Date.now() + timeoutMs;
 
-  await acquireProxySlot();
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const proxy = attempt === 1
-        ? pickStickyProxy(entry, service, sid)
-        : pickNextProxy(entry, usedIds);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // مهلة كل محاولة قصيرة (12ث افتراضاً) حتى لا تعلّق اتصالاً ميتاً على دجيزي خانة
+    // التوازي طوال 60ث؛ والميزانية الكلية تبقى timeoutMs.
+    const remaining = deadline - Date.now();
+    if (attempt > 1 && remaining <= 1500) break;
+    const attemptTimeout = Math.max(3000, Math.min(ATTEMPT_TIMEOUT_MS, remaining));
 
-      if (!proxy) {
-        return { status: 0, data: undefined, headers: null, error: `لا يوجد بروكسي نشط للخدمة "${service}"`, via: 'db-proxy' };
-      }
-      if (proxy) usedIds.push(proxy.id);
+    const proxy = attempt === 1
+      ? pickStickyProxy(entry, service, sid)
+      : pickNextProxy(entry, usedIds);
 
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      try {
-        const target = new URL(url);
-        const pUrl = proxyUrl(proxy, sid, service);
+    if (!proxy) {
+      return { status: 0, data: undefined, headers: null, error: `لا يوجد بروكسي نشط للخدمة "${service}"`, via: 'db-proxy' };
+    }
+    usedIds.push(proxy.id);
 
-        const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal);
-        console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
-        if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0, 80)}`);
+    // تبريد بين المحاولات دون احتجاز خانة التوازي
+    if (attempt > 1) await sleep(250 * (attempt - 1));
 
-        if (!r.status) {
-          // عطل شبكة عابر على هذا الاتصال: استبعاد قصير (لا نُسقط التجمع الوحيد طويلاً).
-          markBadMs(proxy.id, AUTH_BAD_BASE_MS);
-          markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
-          lastResult = { status: 0, data: undefined, headers: null, text: r.text, error: r.error || 'proxy error', via: 'db-proxy' };
-          if (attempt < maxAttempts) {
-            console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${r.error || 'network'} → retry`);
-            await sleep(300 * attempt);
-            continue;
-          }
-          return lastResult;
-        }
+    const slotKey = String(proxy.id);
+    await acquireProxySlot(slotKey);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), attemptTimeout);
+    try {
+      const target = new URL(url);
+      const pUrl = proxyUrl(proxy, sid, service);
 
-        let data;
-        try { data = JSON.parse(r.text); } catch { data = r.text; }
-        const result = { status: r.status, data, headers: r.headers, text: r.text, via: 'db-proxy' };
-        lastResult = result;
+      const r = await httpViaProxy(pUrl, target.href, { method, headers, body }, ctrl.signal, attemptTimeout);
+      console.log(`[proxy] ${proxy.host}:${proxy.port} sid=${sid || '-'} user=${proxy.username} status=${r.status} text=${String(r.text).slice(0, 80)}`);
+      if (r.status === 407) console.log(`[proxy] 407 from ${proxy.host}:${proxy.port} (user=${proxy.username}) pUrl=${pUrl.split('@').pop()} text=${String(r.text).slice(0, 80)}`);
 
-        if (isBlocked(result, service) || isGateway500(result)) {
-          if (result.status === 407) {
-            // 407 = حد مصادقة/اتصالات عابر (خاصة مع التدوير عند الرمي): استبعاد قصير متصاعد،
-            // يُصفَّر عند أي نجاح. لا نسودّد IP هنا (ليست مشكلة IP).
-            const n = (authFailCount.get(proxy.id) || 0) + 1;
-            authFailCount.set(proxy.id, n);
-            const ttl = Math.min(AUTH_BAD_MAX_MS, AUTH_BAD_BASE_MS * Math.pow(2, n - 1));
-            markBadMs(proxy.id, ttl);
-            markBadD1(env, proxy.id, ttl);
-            console.log(`[proxy] ${proxy.host}:${proxy.port} 407 x${n} → excl ${Math.round(ttl / 1000)}s`);
-          } else if (isGateway500(result)) {
-            // بوابة شبكة سيئة على هذا الـ IP: نفحص الـ IP ونضعه في بلاك ليست ثم نحذف
-            // كاش الـ IP حتى لا يعلق البروكسي على عنوان سيئ، ونواصل باتصال/تدوير جديد.
-            const ip = await probeEgressIp(env, proxy, service);
-            if (ip) {
-              blacklistIp(ip, `gateway 500`);
-              await persistIpBlacklist(env, service, ip, proxy.host, 'gateway 500');
-              ipCache.delete('P' + proxy.id);
-            }
-          } else {
-            // حجب المشغِّل لعنوان الخروج: كشف الـ IP الفعلي وإضافته للبلاك ليست + استبعاد
-            // قصير للصف (المزوّد الدوّار يعطي IP جديداً بالاتصال التالي — لا منفعة من حظر طويل).
-            markBadMs(proxy.id, AUTH_BAD_BASE_MS);
-            markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
-            const ip = await probeEgressIp(env, proxy, service);
-            if (ip) {
-              blacklistIp(ip, `operator block http ${result.status}`);
-              await persistIpBlacklist(env, service, ip, proxy.host, `operator block http ${result.status}`);
-              ipCache.delete('P' + proxy.id);
-            }
-          }
-          // للـ POST: إعادة التدوير فقط عند فشل طبقة-النقل (لم يبلغ الخادم) —
-          // 407 ردّ البروكسي قبل إرسال الطلب، 522/بوابة-500 اعتراض قبل التطبيق.
-          const transportFault = result.status === 407 || result.status === 522 || isGateway500(result);
-          const canRotate = method !== 'POST' || transportFault;
-          if (canRotate && attempt < maxAttempts) {
-            console.log(`[proxy] attempt ${attempt}/${maxAttempts} blocked (${result.status}) → rotating${method === 'POST' ? ' (transport-only)' : ''}`);
-            await sleep(300 * attempt);
-            continue;
-          }
-          return result;
-        }
-
-        authFailCount.delete(proxy.id);
-        markGoodD1(env, proxy.id);
-        if (service === 'djezzy' && result.status !== 429) stickSid(service, sid, proxy.id);
-        await touchLastUsed(env, proxy);
-        return result;
-      } catch (e) {
-        markBadMs(proxy.id, AUTH_BAD_BASE_MS);
-        markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
+      if (!r.status) {
+        // عطل شبكة عابر على هذا الاتصال: استبعاد قصير في الذاكرة فقط (لا نكتب blocked_until
+        // في DB حتى لا يُقصى العنوان من التجمع بينما قد يعمل بعد لحظات).
+        markBadMs(proxy.id, TRANSIENT_BAD_MS);
+        lastResult = { status: 0, data: undefined, headers: null, text: r.text, error: r.error || 'proxy error', via: 'db-proxy' };
         if (attempt < maxAttempts) {
-          console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${e.message} → retry`);
-          await sleep(300 * attempt);
+          console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${r.error || 'network'} → retry`);
           continue;
         }
-        return { status: 0, data: undefined, headers: null, error: e.message || 'proxy error', via: 'db-proxy' };
-      } finally {
-        clearTimeout(timer);
+        return lastResult;
       }
+
+      let data;
+      try { data = JSON.parse(r.text); } catch { data = r.text; }
+      const result = { status: r.status, data, headers: r.headers, text: r.text, via: 'db-proxy' };
+      lastResult = result;
+
+      // دجيزي 429 = ضغط/حدّ على عنوان الخروج الحالي. نستبعده دقيقة وننتقل لعنوان آخر
+      // خلال نفس الطلب (حتى للـ POST لأن 429 يعني أن الطلب لم يُنفَّذ) لتوزيع الحمل.
+      if (service === 'djezzy' && result.status === 429) {
+        markBadMs(proxy.id, DJEZZY_429_BAD_MS);
+        markBadD1(env, proxy.id, DJEZZY_429_BAD_MS);
+        if (attempt < maxAttempts) {
+          console.log(`[proxy] djezzy 429 on ${proxy.host}:${proxy.port} → rotate`);
+          continue;
+        }
+        return result;
+      }
+
+      if (isBlocked(result, service) || isGateway500(result)) {
+        if (result.status === 407) {
+          // 407 = حد مصادقة/اتصالات عابر (خاصة مع التدوير عند الرمي): استبعاد قصير متصاعد،
+          // يُصفَّر عند أي نجاح. لا نسودّد IP هنا (ليست مشكلة IP).
+          const n = (authFailCount.get(proxy.id) || 0) + 1;
+          authFailCount.set(proxy.id, n);
+          const ttl = Math.min(AUTH_BAD_MAX_MS, AUTH_BAD_BASE_MS * Math.pow(2, n - 1));
+          markBadMs(proxy.id, ttl);
+          markBadD1(env, proxy.id, ttl);
+          console.log(`[proxy] ${proxy.host}:${proxy.port} 407 x${n} → excl ${Math.round(ttl / 1000)}s`);
+        } else if (isGateway500(result)) {
+          // بوابة شبكة سيئة على هذا الـ IP: نفحص الـ IP ونضعه في بلاك ليست ثم نحذف
+          // كاش الـ IP حتى لا يعلق البروكسي على عنوان سيئ، ونواصل باتصال/تدوير جديد.
+          const ip = await probeEgressIp(env, proxy, service);
+          if (ip) {
+            blacklistIp(ip, `gateway 500`);
+            await persistIpBlacklist(env, service, ip, proxy.host, 'gateway 500');
+            ipCache.delete('P' + proxy.id);
+          }
+        } else {
+          // حجب المشغِّل لعنوان الخروج: كشف الـ IP الفعلي وإضافته للبلاك ليست + استبعاد
+          // قصير للصف (المزوّد الدوّار يعطي IP جديداً بالاتصال التالي — لا منفعة من حظر طويل).
+          markBadMs(proxy.id, AUTH_BAD_BASE_MS);
+          markBadD1(env, proxy.id, AUTH_BAD_BASE_MS);
+          const ip = await probeEgressIp(env, proxy, service);
+          if (ip) {
+            blacklistIp(ip, `operator block http ${result.status}`);
+            await persistIpBlacklist(env, service, ip, proxy.host, `operator block http ${result.status}`);
+            ipCache.delete('P' + proxy.id);
+          }
+        }
+        // للـ POST: إعادة التدوير فقط عند فشل طبقة-النقل (لم يبلغ الخادم) —
+        // 407 ردّ البروكسي قبل إرسال الطلب، 522/بوابة-500 اعتراض قبل التطبيق.
+        const transportFault = result.status === 407 || result.status === 522 || isGateway500(result);
+        const canRotate = method !== 'POST' || transportFault;
+        if (canRotate && attempt < maxAttempts) {
+          console.log(`[proxy] attempt ${attempt}/${maxAttempts} blocked (${result.status}) → rotating${method === 'POST' ? ' (transport-only)' : ''}`);
+          continue;
+        }
+        return result;
+      }
+
+      authFailCount.delete(proxy.id);
+      markGoodD1(env, proxy.id);
+      if (service === 'djezzy' && result.status !== 429) stickSid(service, sid, proxy.id);
+      await touchLastUsed(env, proxy);
+      return result;
+    } catch (e) {
+      markBadMs(proxy.id, TRANSIENT_BAD_MS);
+      if (attempt < maxAttempts) {
+        console.log(`[proxy] attempt ${attempt}/${maxAttempts} error: ${e.message} → retry`);
+        continue;
+      }
+      return { status: 0, data: undefined, headers: null, error: e.message || 'proxy error', via: 'db-proxy' };
+    } finally {
+      clearTimeout(timer);
+      releaseProxySlot(slotKey);
     }
-  } finally {
-    releaseProxySlot();
   }
   return lastResult || { status: 0, data: undefined, headers: null, error: 'proxy attempts exhausted', via: 'db-proxy' };
 }
